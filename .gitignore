@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+runtime/
+.streamlit/secrets.toml
+.env
+.env.*
+!.env.example
+*.pyc
+.DS_Store
+.codebase-memory/
+artifacts/*.webm

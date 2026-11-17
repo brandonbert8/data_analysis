@@ -1,0 +1,14 @@
+.git
+.venv
+runtime
+__pycache__
+.pytest_cache
+.ruff_cache
+artifacts
+graphify-out
+.codebase-memory
+*.ipynb
+tests
+.streamlit/secrets.toml
+.env
+.env.*

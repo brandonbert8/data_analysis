@@ -1,0 +1,10 @@
+services:
+  sismolab:
+    build: .
+    ports:
+      - "127.0.0.1:8501:8501"
+    volumes:
+      - sismolab_data:/app/runtime
+    restart: unless-stopped
+volumes:
+  sismolab_data:
