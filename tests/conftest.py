@@ -2,25 +2,29 @@ from pathlib import Path
 
 import pytest
 
-from sismo.data import clean_catalog, read_csv
-from sismo.features import FeatureConfig, build_features
-from sismo.modeling import TrainConfig, train_experiment
+from umsa.data import build_similarity_index, load_bundle, load_corpus, percentile_table
 
 
 @pytest.fixture(scope="session")
-def catalog():
-    return clean_catalog(
-        read_csv((Path(__file__).parents[1] / "datasets" / "query (2).csv").read_bytes())
-    ).frame
+def corpus():
+    return load_corpus()
 
 
 @pytest.fixture(scope="session")
-def frame(catalog):
-    return build_features(catalog, FeatureConfig())
+def index(corpus):
+    return build_similarity_index(corpus)
 
 
 @pytest.fixture(scope="session")
-def experiment(catalog):
-    return train_experiment(
-        catalog, config=TrainConfig(feature_sets=("F25",), models=("Regresión logística",))
-    )
+def percentiles(corpus):
+    return percentile_table(corpus)
+
+
+@pytest.fixture(scope="session")
+def bundle():
+    return load_bundle()
+
+
+@pytest.fixture(scope="session")
+def repo_root():
+    return Path(__file__).parents[1]
