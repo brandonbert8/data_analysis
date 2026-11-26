@@ -148,3 +148,4 @@ docker compose up --build
 ```
 
 La app escucha en `127.0.0.1:8501` y persiste el registro en el volumen `umsa_data`. El directorio de datos se puede cambiar con `UMSA_DATA_DIR`.
+La carga de PDFs para auditoría admite hasta 50 MB; si se publica detrás de un proxy inverso, éste también debe permitir ese tamaño.
