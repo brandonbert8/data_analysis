@@ -1,7 +1,7 @@
 [project]
-name = "sismo-lab"
+name = "umsa-auditor"
 version = "0.1.0"
-description = "Laboratorio interactivo de evaluación temporal de actividad sísmica"
+description = "Auditor académico explicable del repositorio de tesis de Informática UMSA"
 requires-python = ">=3.11,<3.14"
 dependencies = [
   "streamlit>=1.50,<2",
@@ -12,6 +12,10 @@ dependencies = [
   "plotly>=6,<7",
   "joblib>=1.4,<2",
   "threadpoolctl>=3.5,<4",
+  "pypdf>=5,<8",
+  "requests>=2.31,<3",
+  "python-dotenv>=1.1,<2",
+  "sqlglot>=27,<40",
 ]
 
 [dependency-groups]
@@ -23,4 +27,5 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 110
+extend-exclude = ["repositorioUMSA.ipynb"]
 

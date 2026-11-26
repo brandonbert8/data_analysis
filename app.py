@@ -1,918 +1,1005 @@
-"""SismoLab — aplicación Streamlit del pipeline sismos_integrado.ipynb."""
+"""UMSA Auditor — aplicación Streamlit del cuaderno repositorioUMSA.ipynb."""
 
-from dataclasses import asdict
-from datetime import datetime, timezone
-from io import BytesIO
+from __future__ import annotations
+
 import json
 import os
 from pathlib import Path
-import zipfile
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from sklearn.calibration import calibration_curve
-from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_curve
 import streamlit as st
 
-from sismo.data import REQUIRED, clean_catalog, csv_bytes, fingerprint, read_csv
-from sismo.features import CATS, F19, F25, FeatureConfig, build_features, temporal_partitions
-from sismo.modeling import (
-    FAMILIES,
-    TrainConfig,
-    block_intervals,
-    importance,
-    metrics,
-    score_new,
-    train_experiment,
+from umsa.analytics import teacher_rows
+from umsa.audit import (
+    audit_document,
+    audit_to_json,
+    audit_verdict_band,
+    openalex_search,
+    resolve_corpus_pdf,
 )
-from sismo.storage import Store
+from umsa.data import (
+    DATASET_DIR,
+    METRIC_LABELS,
+    NUMERIC_METRICS,
+    PDF_DIR,
+    SECTION_LABELS,
+    available_pdfs,
+    build_similarity_index,
+    cluster_terms,
+    corpus_fingerprint,
+    load_benchmark,
+    load_bundle,
+    load_corpus,
+    load_metadata,
+    percentile_table,
+    similar_documents,
+)
+from umsa.lessons import benchmark_lesson
+from umsa.modeling import (
+    correlation_table,
+    note_validation,
+    train_rigor_model,
+)
+from umsa.presentation import chat_page, experiment_page
+from umsa.storage import AuditStore
 
 ROOT = Path(__file__).resolve().parent
-st.set_page_config(page_title="SismoLab · Inteligencia sísmica", page_icon="◉", layout="wide")
+st.set_page_config(page_title="UMSA Auditor · Rigor académico", page_icon="◈", layout="wide")
 px.defaults.template = "plotly_white"
-px.defaults.color_discrete_sequence = ["#0F8B8D", "#F4A259", "#5278BA", "#E36C6C", "#9B77B5"]
+px.defaults.color_discrete_sequence = ["#355DA8", "#248471", "#D9A441", "#C66B72", "#8C78B4", "#508CBB"]
+
+PAGES = ["Resumen", "Experimento", "Exploración", "Corpus", "Chat RAG", "Auditoría PDF", "Modelos", "Registro"]
 
 
 def style():
-    st.html("""<style>
-    .stApp {background: #F6F8FB;}
-    .block-container {padding-top: 2rem; max-width: 1500px;}
-    h1 {font-weight: 750 !important; letter-spacing: -1.5px;}
-    h2,h3 {letter-spacing: -.5px;}
-    [data-testid="stSidebar"] {border-right: 1px solid #DDE5EE;}
-    [data-testid="stMetric"] {background:white;border:1px solid #E1E7EE;border-radius:12px;padding:18px;}
-    .eyebrow {color:#0F8B8D;font-size:12px;font-weight:750;letter-spacing:2px;margin-bottom:12px;}
-    .hero {border-radius:16px;background:linear-gradient(120deg,#142D48,#155B66);padding:30px;color:#FFF;margin-bottom:22px;}
-    .hero h2 {color:white;margin:0;font-size:29px;}
-    .hero p {color:#CFE4EC;max-width:850px;margin-bottom:0;}
-    .step {background:white;border:1px solid #E1E7EE;border-radius:12px;padding:18px;min-height:150px;}
-    .step b {color:#0F8B8D;}
-    </style>""")
+    st.html(
+        """<style>
+        .stApp {background:#F3F6FB;}
+        .block-container {padding-top:2rem;max-width:1500px;padding-bottom:3rem;}
+        h1 {font-size:clamp(2rem,1.5rem + 1.5vw,3rem)!important;font-weight:760!important;letter-spacing:-.055em;}
+        h2,h3 {letter-spacing:-.025em;}
+        [data-testid="stSidebar"] {border-right:1px solid #DFE6F1;background:#FFF;}
+        [data-testid="stMetric"] {background:white;border:1px solid #DFE6F1;border-radius:16px;padding:1.1rem;}
+        [data-testid="stMetricValue"] {color:#1D3B68;font-variant-numeric:tabular-nums;}
+        .eyebrow {color:#486A9A;font-size:.8125rem;font-weight:760;letter-spacing:.15em;margin-bottom:.75rem;}
+        .hero {border-radius:20px;background:linear-gradient(115deg,#152C52,#24497C 65%,#24685B);
+               padding:clamp(1.25rem,1rem + 2vw,2.5rem);color:#FFF;margin-bottom:1.5rem;}
+        .hero h2 {color:#FFF;margin:0;font-size:clamp(1.4rem,1rem + 1vw,2rem);}
+        .hero p {color:#E0E9F8;max-width:960px;margin-bottom:0;line-height:1.7;}
+        .step {background:white;border:1px solid #DFE6F1;border-top:3px solid #355DA8;
+               border-radius:14px;padding:1.2rem;min-height:190px;}
+        .step b {color:#355DA8;font-size:.875rem;}
+        .step h4 {font-size:1.125rem;line-height:1.4;margin:.6rem 0;}
+        .step p {color:#536680;line-height:1.6;}
+        .verdict {border-radius:14px;padding:1rem 1.125rem;background:white;border:1px solid #DFE6F1;}
+        [data-testid="stPlotlyChart"] {border:1px solid #DFE6F1;border-radius:16px;background:#FFF;overflow:hidden;}
+        [data-testid="stChatMessage"] {border:1px solid #DFE6F1;border-radius:16px;background:white;}
+        button:focus-visible,a:focus-visible {outline:3px solid #355DA8!important;outline-offset:3px;}
+        @media(max-width:640px) {
+            .block-container {padding-left:1rem;padding-right:1rem;}
+            .step {min-height:0;}
+            [data-baseweb="tab-list"] {overflow-x:auto;}
+        }
+        </style>"""
+    )
 
 
 def chart(fig, height=350):
     fig.update_layout(
         height=height,
-        margin=dict(l=15, r=15, t=35, b=20),
+        margin={"l": 20, "r": 25, "t": 65, "b": 60},
         paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="sans-serif", color="#172B4D"),
+        plot_bgcolor="rgba(0,0,0,0)",
+        font={"family": "sans-serif", "color": "#172B4D", "size": 14},
     )
-    st.plotly_chart(fig, width="stretch")
+    fig.update_xaxes(automargin=True)
+    fig.update_yaxes(automargin=True)
+    st.plotly_chart(fig, width="stretch", config={"displaylogo": False, "scrollZoom": False})
 
 
 @st.cache_data(show_spinner=False)
-def featured(catalog, config):
-    return build_features(catalog, config)
+def get_corpus() -> pd.DataFrame:
+    return load_corpus()
 
 
-def set_catalog(raw, source):
-    st.session_state.raw = raw
-    st.session_state.source = source
-    st.session_state.pop("bundle", None)
-    st.session_state.pop("external", None)
-    st.session_state.pop("external_id", None)
+@st.cache_data(show_spinner=False)
+def get_metadata() -> pd.DataFrame:
+    return load_metadata()
 
 
-def get_bundle():
-    bundle = st.session_state.get("bundle")
-    if bundle is None:
-        st.info("Primero ejecuta un entrenamiento o abre un experimento guardado en Registro.")
-        return None
-    return bundle
+@st.cache_data(show_spinner=False)
+def get_benchmark() -> pd.DataFrame:
+    return load_benchmark()
 
 
-def summary(catalog, frame, config):
-    st.html('<div class="eyebrow">OBSERVATORIO / RESUMEN EJECUTIVO</div>')
-    st.title("Del catálogo a la evidencia.")
-    st.html(
-        '<div class="hero"><h2>Inteligencia sísmica, con trazabilidad.</h2><p>Explora el catálogo, '
-        "comprueba cada transformación y contrasta modelos con datos que todavía no han visto. "
-        "Todo el ciclo analítico en un solo lugar.</p></div>"
+@st.cache_resource(show_spinner=False)
+def get_bundle() -> dict:
+    return load_bundle()
+
+
+@st.cache_resource(show_spinner=False)
+def get_index() -> dict:
+    return build_similarity_index(get_corpus())
+
+
+@st.cache_data(show_spinner=False)
+def get_percentiles() -> dict:
+    return percentile_table(get_corpus())
+
+
+@st.cache_data(show_spinner=False)
+def get_cluster_terms() -> dict:
+    return cluster_terms(get_corpus())
+
+
+@st.cache_data(show_spinner=False)
+def audit_corpus_pdf(filename: str) -> dict:
+    return audit_document(
+        resolve_corpus_pdf(filename, PDF_DIR), filename, get_corpus(), get_index(), get_percentiles()
     )
-    eligible = frame.loc[frame.observable & frame.warmup_complete]
+
+
+def get_store() -> AuditStore:
+    return AuditStore(os.environ.get("UMSA_DATA_DIR", str(ROOT / "runtime")))
+
+
+def hero(eyebrow: str, title: str, subtitle: str, headline: str):
+    st.html(f'<div class="eyebrow">{eyebrow}</div>')
+    st.title(title)
+    st.html(f'<div class="hero"><h2>{headline}</h2><p>{subtitle}</p></div>')
+
+
+def summary(corpus: pd.DataFrame, store: AuditStore):
+    hero(
+        "OBSERVATORIO / RESUMEN EJECUTIVO",
+        "Del expediente a la evidencia.",
+        "Explora el experimento PLN del repositorio de Informática de la UMSA: "
+        "del corpus y sus gráficos a los modelos y a un chat que responde con evidencia recuperada.",
+        "Un laboratorio de lenguaje y evidencia académica.",
+    )
+    percentiles = get_percentiles()
+    bundle = get_bundle()
+    notes = note_validation(corpus)
     cols = st.columns(4)
-    cols[0].metric("Eventos en catálogo", f"{len(catalog):,}")
-    cols[1].metric("Eventos M ≥ umbral", int((catalog.mag >= config.magnitude).sum()))
-    cols[2].metric("Casos positivos elegibles", int(eligible.target.sum()))
-    cols[3].metric("Futuro pendiente", int((~frame.observable).sum()))
+    cols[0].metric("Tesis en el corpus", f"{len(corpus)}")
+    cols[1].metric("Mediana de rigor", f"{corpus['indice_rigor_academico'].median():.2f} / 100")
+    cols[2].metric("Mediana de citas", f"{percentiles['total_citas_detectadas']['p50']:.0f}")
+    cols[3].metric("Anomalías estructurales", int(corpus["anomalia"].sum()))
     st.caption(
-        f"Cobertura UTC: {catalog.time.min():%d %b %Y} → {catalog.time.max():%d %b %Y} · "
-        f"Fuente: {st.session_state.source} · {catalog.country.nunique()} regiones de referencia"
+        f"Corpus: {corpus['fecha'].min()} → {corpus['fecha'].max()} · "
+        f"{corpus['autores'].nunique()} autores · {corpus['tutores'].nunique()} tutores · "
+        f"huella {corpus_fingerprint(corpus)[:16]}"
     )
+
     left, right = st.columns([1.7, 1])
     with left:
-        st.subheader("Una pregunta medible")
-        st.write(
-            f"Dado un evento del catálogo, ¿aparecerá otro de magnitud **≥ {config.magnitude:g}** "
-            f"en su misma celda de **{config.grid:g}° × {config.grid:g}°** dentro de los siguientes "
-            f"**{config.horizon} días**?"
+        st.subheader("Distribución del índice de rigor")
+        fig = px.histogram(
+            corpus,
+            x="indice_rigor_academico",
+            nbins=22,
+            labels={"indice_rigor_academico": "Índice de rigor académico"},
+            title="70 tesis · umbral empírico de la mediana",
         )
-        monthly = catalog.set_index("time").resample("MS").size().rename("eventos").reset_index()
-        chart(
-            px.area(monthly, x="time", y="eventos", labels={"time": "Mes (UTC)", "eventos": "Eventos"}), 290
+        fig.add_vline(x=60, line_dash="dash", line_color="#A24E5A", annotation_text="60 · aceptable")
+        fig.add_vline(x=72, line_dash="dash", line_color="#4E8B62", annotation_text="72 · sólido")
+        fig.add_vline(x=float(corpus["indice_rigor_academico"].median()), line_dash="dot", line_color="#355DA8",
+                      annotation_text="Mediana del corpus", annotation_position="bottom right")
+        chart(fig, 320)
+        st.caption(
+            "El índice combina estructura reglamentaria (25%), coherencia objetivos↔aplicativo (25%), "
+            "coherencia objetivos↔conclusiones (15%), citas (20%) y extensión (15%)."
         )
     with right:
         st.subheader("Estado del proyecto")
-        bundle = st.session_state.get("bundle")
-        if bundle:
-            st.success("Experimento disponible")
-            st.write("**Seleccionado por CV:**", bundle["metadata"]["selected"])
-            row = bundle["results"].iloc[0]
-            st.metric("AP en prueba reservada", f"{row.AP:.3f}" if pd.notna(row.AP) else "No definida")
-        else:
-            st.info("Catálogo listo. Abre Modelo para generar la primera comparación.")
+        st.success("Corpus y paquete de producción cargados")
         st.write(
-            "**Protocolo:** 60% entrenamiento / 20% validación / 20% prueba, con embargo temporal en ambas fronteras."
+            "**Paquete de producción:**",
+            f"{len(bundle['metadata_umsa'])} fichas · embeddings {bundle['embeddings_umsa'].shape[1]}D",
         )
-    st.subheader("Un recorrido para la evaluación")
+        st.write("**Mediana de referencia:**", f"{corpus['indice_rigor_academico'].median():.2f}")
+        if notes["spearman"] is not None:
+            st.metric(
+                "Spearman rigor vs. nota real",
+                f"{notes['spearman']:.3f}",
+                help=f"n={notes['n']} tesis con nota numeral extraída del acta",
+            )
+        st.write(
+            "**Fuente:** `df_maestro_final_modelos_70.parquet` + "
+            "`auditor_umsa_produccion.joblib`."
+        )
+        st.write(
+            "**Protocolo:** 8 secciones reglamentarias, citas APA/IEEE, coherencia léxica TF-IDF "
+            "y estilometría (burstiness + MATTR)."
+        )
+        st.info(
+            "El índice es una señal de apoyo, no una calificación oficial. Las notas del tribunal "
+            "sólo están disponibles para una muestra pequeña."
+        )
+
+    st.subheader("Un proyecto, cuatro formas de explorarlo")
     cards = [
         (
-            "01 / PREPROCESAMIENTO",
-            "EDA, calidad y conversiones",
-            "Inspecciona distribuciones, nulos, tipos y registros rechazados.",
+            "EXPERIMENTO",
+            "¿Cómo se construyó el estudio?",
+            "Depuración del corpus, laboratorio PLN y gráficos originales del cuaderno.",
         ),
         (
-            "02 / MODELO",
-            "Aprender sólo del pasado",
-            "Compara F19/F25 y seis familias con validación de origen expansivo.",
+            "01 / EXPLORAR",
+            "¿Cómo se distribuye el rigor?",
+            "Años, modalidades, tutores, clústeres temáticos, cumplimiento de secciones y anomalías.",
         ),
         (
-            "03 / EVALUACIÓN",
-            "Medir antes de decidir",
-            "AP, curvas, matriz de confusión y comparación con reglas simples.",
+            "02 / AUDITAR",
+            "¿Qué le falta a un PDF nuevo?",
+            "Diagnóstico explicable por sección, citas, coherencia y redacción, con tesis similares.",
         ),
         (
-            "04 / DESPLIEGUE",
-            "Un flujo que sigue creciendo",
-            "Carga nuevos eventos, conserva el modelo y espera etiquetas observables.",
+            "CHAT CON RAG",
+            "¿Qué dice la evidencia?",
+            "Consulta la metodología y las tesis con GPT-4o mini y fragmentos verificables.",
         ),
     ]
     for col, (label, title, body) in zip(st.columns(4), cards):
         with col:
             st.html(f'<div class="step"><b>{label}</b><h4>{title}</h4><p>{body}</p></div>')
-    st.info(
-        "Alcance: evaluación estadística experimental de un catálogo. Los scores no constituyen una "
-        "predicción sísmica validada ni deben utilizarse para decisiones de emergencia."
-    )
+
+    recent = store.audits()[:5]
+    if recent:
+        st.subheader("Últimas auditorías guardadas")
+        st.dataframe(pd.DataFrame(recent), hide_index=True, width="stretch")
 
 
-def preprocessing(raw, cleaned, frame, config):
-    st.html('<div class="eyebrow">01 / PREPROCESAMIENTO</div>')
-    st.title("Conocer antes de modelar")
-    tab_eda, tab_clean, tab_features = st.tabs(
-        ["Exploración", "Limpieza y conversión", "Variables y etiqueta"]
+def exploration(corpus: pd.DataFrame):
+    st.html('<div class="eyebrow">01 / EXPLORACIÓN</div>')
+    st.title("Conocer el corpus antes de auditar")
+    left, middle, right = st.columns([2, 2, 2])
+    years = left.multiselect(
+        "Año de publicación", sorted(corpus["fecha"].dropna().unique().tolist()), default=[]
     )
-    catalog = cleaned.frame
-    with tab_eda:
-        c1, c2 = st.columns(2)
-        countries = c1.multiselect(
-            "País / referencia", sorted(catalog.country.unique()), default=sorted(catalog.country.unique())
-        )
-        dates = c2.date_input(
-            "Intervalo de exploración (UTC)",
-            (catalog.time.min().date(), catalog.time.max().date()),
-            min_value=catalog.time.min().date(),
-            max_value=catalog.time.max().date(),
-        )
-        subset = catalog.loc[catalog.country.isin(countries)]
-        if len(dates) == 2:
-            subset = subset.loc[(subset.time.dt.date >= dates[0]) & (subset.time.dt.date <= dates[1])]
-        st.caption(f"{len(subset):,} eventos en la vista. Estos filtros sólo afectan la exploración.")
-        if subset.empty:
-            st.info("Sin eventos para estos filtros.")
-        else:
-            left, right = st.columns(2)
-            with left:
-                chart(
-                    px.histogram(
-                        subset,
-                        x="mag",
-                        nbins=30,
-                        title="Distribución de magnitud",
-                        labels={"mag": "Magnitud"},
-                    )
+    modalities = middle.multiselect(
+        "Modalidad", sorted(corpus["modalidad"].unique().tolist()), default=[]
+    )
+    clusters = right.multiselect(
+        "Clúster temático", sorted(corpus["cluster_tematico"].dropna().unique().tolist()), default=[]
+    )
+    subset = corpus.copy()
+    if years:
+        subset = subset[subset["fecha"].isin(years)]
+    if modalities:
+        subset = subset[subset["modalidad"].isin(modalities)]
+    if clusters:
+        subset = subset[subset["cluster_tematico"].isin(clusters)]
+    st.caption(f"{len(subset)} tesis en la vista. Los filtros sólo afectan la exploración.")
+    if subset.empty:
+        st.info("No hay tesis para estos filtros.")
+        return
+
+    cols = st.columns(4)
+    cols[0].metric("Tesis", len(subset))
+    cols[1].metric("Rigor medio", f"{subset['indice_rigor_academico'].mean():.2f}")
+    cols[2].metric("Citas medianas", f"{subset['total_citas_detectadas'].median():.0f}")
+    cols[3].metric("Páginas medianas", f"{subset['num_paginas'].median():.0f}")
+
+    tab_dist, tab_topics, tab_structure = st.tabs(
+        ["Distribución y correlaciones", "Tutores y temas", "Cumplimiento estructural"]
+    )
+    with tab_dist:
+        left, right = st.columns(2)
+        with left:
+            chart(
+                px.box(
+                    subset,
+                    x="modalidad",
+                    y="indice_rigor_academico",
+                    color="modalidad",
+                    points="all",
+                    labels={"modalidad": "Modalidad", "indice_rigor_academico": "Índice de rigor"},
+                    title="Rigor por modalidad",
                 )
-                chart(
-                    px.scatter(
-                        subset,
-                        x="longitude",
-                        y="latitude",
-                        color="depth",
-                        size="mag",
-                        size_max=14,
-                        hover_data=["time", "place", "mag"],
-                        title="Epicentros · coordenadas",
-                        color_continuous_scale="Teal",
-                        labels={"longitude": "Longitud", "latitude": "Latitud", "depth": "Profundidad (km)"},
-                    )
-                ) if subset.mag.min() >= 0 else chart(
-                    px.scatter(subset, x="longitude", y="latitude", color="depth")
-                )
-            with right:
-                chart(
-                    px.box(
-                        subset,
-                        x="country",
-                        y="depth",
-                        title="Profundidad y valores extremos",
-                        labels={"country": "País", "depth": "Profundidad (km)"},
-                    )
-                )
-                corr_cols = ["mag", "depth", "latitude", "longitude", "nst", "gap", "rms", "magError"]
-                chart(
-                    px.imshow(
-                        subset[corr_cols].corr(),
-                        zmin=-1,
-                        zmax=1,
-                        color_continuous_scale="RdBu_r",
-                        title="Correlación de Pearson",
-                    )
-                )
-            with st.expander("Gutenberg–Richter: análisis descriptivo"):
-                mc = float(subset.mag.round(1).mode().iloc[0])
-                tail = subset.loc[subset.mag >= mc, "mag"]
-                b = np.log10(np.e) / (tail.mean() - (mc - 0.05))
-                mags = np.sort(subset.mag.unique())
-                chart(
-                    px.line(
-                        x=mags,
-                        y=[(subset.mag >= m).sum() for m in mags],
-                        log_y=True,
-                        labels={"x": "Magnitud", "y": "N acumulado"},
-                        title=f"Mc modal ≈ {mc:.1f} · b descriptivo ≈ {b:.2f}",
-                    )
-                )
-                st.caption(
-                    "Mc modal es una aproximación exploratoria; no demuestra completitud del catálogo."
-                )
-            st.dataframe(subset, hide_index=True, width="stretch")
-            st.download_button(
-                "Descargar vista explorada", csv_bytes(subset), "vista_catalogo.csv", "text/csv"
             )
-    with tab_clean:
-        cols = st.columns(4)
-        for col, key in zip(cols, ["entrada", "válidos", "rechazados", "duplicados"]):
-            col.metric(key.capitalize(), cleaned.audit[key])
-        st.write(
-            "Las fechas se convierten a UTC y los números inválidos a nulos. Se rechazan eventos sin fecha, "
-            "coordenadas, magnitud o profundidad válidas. Los duplicados se resuelven por ID y evento; "
-            "si hay revisiones se conserva la última actualización conocida."
-        )
-        st.write(
-            "**Reglas físicas:** latitud [−90, 90], longitud [−180, 180], profundidad [−10, 800] km, magnitud [−2, 10]. "
-            "Los indicadores de calidad negativos se convierten a nulos. Los extremos válidos se conservan."
-        )
-        st.dataframe(cleaned.schema, hide_index=True, width="stretch")
-        st.caption(
-            "Columnas constantes (documentadas, sin eliminación del contrato): "
-            + ", ".join(cleaned.audit["constantes"])
-        )
-        missing = cleaned.schema.query("nulos > 0")
-        if len(missing):
-            chart(px.bar(missing, x="columna", y="nulos", title="Faltantes antes de imputar"), 270)
-        st.info(
-            "La imputación mediana, los indicadores de ausencia, el escalado y el one-hot se ajustan "
-            "dentro de cada fold de entrenamiento. Ningún valor de prueba determina estas transformaciones."
-        )
-        with st.expander("Comparar registros originales y limpios"):
-            st.write("Originales")
-            st.dataframe(raw.head(25), hide_index=True)
-            st.write("Limpios")
-            st.dataframe(catalog.head(25), hide_index=True)
-        if len(cleaned.rejected):
-            st.dataframe(cleaned.rejected, hide_index=True)
-            st.download_button(
-                "Descargar rechazos con motivo", csv_bytes(cleaned.rejected), "rechazos.csv", "text/csv"
+            chart(
+                px.scatter(
+                    subset,
+                    x="total_citas_detectadas",
+                    y="indice_rigor_academico",
+                    color=subset["cluster_tematico"].astype(str),
+                    size="num_paginas",
+                    hover_data=["titulo", "autores", "fecha"],
+                    labels={
+                        "total_citas_detectadas": "Citas detectadas",
+                        "indice_rigor_academico": "Índice de rigor",
+                        "color": "Clúster",
+                    },
+                    title="Citas vs. rigor",
+                )
             )
-        st.download_button("Descargar catálogo limpio", csv_bytes(catalog), "catalogo_limpio.csv", "text/csv")
+        with right:
+            chart(
+                px.bar(
+                    subset.groupby("fecha").size().rename("Tesis").reset_index(),
+                    x="fecha",
+                    y="Tesis",
+                    text="Tesis",
+                    labels={"fecha": "Año"},
+                    title="Tesis por año",
+                ),
+                300,
+            )
+            corr_cols = [
+                "num_paginas",
+                "total_citas_detectadas",
+                "coh_obj_apl_v2",
+                "coh_obj_con_v2",
+                "burstiness_oraciones",
+                "riqueza_lexica_mattr",
+                "indice_rigor_academico",
+            ]
+            short_labels = dict(zip(corr_cols, ["Páginas", "Citas", "Coh. aplicativo", "Coh. conclusiones",
+                                                 "Burstiness", "MATTR", "Rigor"]))
+            correlation = subset[corr_cols].corr().rename(index=short_labels, columns=short_labels)
+            chart(
+                px.imshow(
+                    correlation,
+                    zmin=-1,
+                    zmax=1,
+                    color_continuous_scale="RdBu_r",
+                    text_auto=".2f",
+                    aspect="auto",
+                    title="Correlación de Pearson entre métricas",
+                ),
+                470,
+            )
+            st.caption("Pearson utiliza los pares disponibles de cada variable. Una correlación no demuestra "
+                       "causalidad; el índice contiene varias de estas métricas en su propia fórmula. "
+                       "Las celdas vacías indican datos insuficientes o variables sin variación.")
         st.download_button(
-            "Descargar auditoría", json.dumps(cleaned.audit, ensure_ascii=False, indent=2), "auditoria.json"
+            "Descargar vista explorada",
+            subset.to_csv(index=False).encode("utf-8"),
+            "exploracion_umsa.csv",
+            "text/csv",
         )
-    with tab_features:
-        st.write(
-            f"**Etiqueta:** otro evento M ≥ {config.magnitude:g} en la misma celda ({config.grid:g}°), "
-            f"en el intervalo abierto por la izquierda (t, t + {config.horizon} días]."
-        )
-        st.write(
-            "Los eventos simultáneos no cuentan como pasado ni como futuro. Las ventanas de actividad miran "
-            "sólo hacia atrás. Las cuentas globales incluyen el evento actual; las de celda cuentan sólo el pasado."
-        )
-        st.write(
-            "**F19:** ubicación, profundidad, calidad de medición, ciclos temporales y actividad global. "
-            "**F25:** añade magnitud actual y actividad histórica de la celda. Ambos usan tipo de magnitud y país."
-        )
-        st.code(
-            "F19 = "
-            + ", ".join(F19)
-            + "\n\nF25 añade = "
-            + ", ".join(F25[len(F19) :])
-            + "\n\nCategóricas = "
-            + ", ".join(CATS),
-            language=None,
-        )
-        cols = st.columns(3)
-        cols[0].metric("Positivos observables", int(frame.target.sum()))
-        cols[1].metric("Futuro sin observar", int((~frame.observable).sum()))
-        cols[2].metric("Historia inicial < 30 días", int((~frame.warmup_complete).sum()))
-        st.warning(
-            "La etiqueta supone un catálogo completo hasta su último evento. No distingue una ausencia real "
-            "de sismos de una interrupción de captura. Los primeros 30 días se excluyen del modelado."
-        )
-        st.dataframe(
-            frame[
-                [
-                    "time",
-                    "id",
-                    "mag",
-                    "lat_grid",
-                    "lon_grid",
-                    "cell_n7",
-                    "cell_n30",
-                    "events_last_30d",
-                    "observable",
-                    "warmup_complete",
-                    "target",
-                ]
-            ],
-            hide_index=True,
-            width="stretch",
-        )
-
-
-def model_page(catalog, frame, config, store):
-    st.html('<div class="eyebrow">02 / MODELO</div>')
-    st.title("Aprender del pasado")
-    st.write(
-        "Los candidatos se comparan por **Average Precision (AP)** en CV temporal del bloque de entrenamiento. "
-        "Después se fija el umbral en validación y se reporta la prueba reservada."
-    )
-    try:
-        parts = temporal_partitions(frame, config.horizon)
-    except ValueError as exc:
-        st.error(str(exc))
-        return
-    rows = [
-        {
-            "bloque": k,
-            "eventos": len(v),
-            "positivos": int(v.target.sum()),
-            "desde": v.time.min(),
-            "hasta": v.time.max(),
-        }
-        for k, v in parts.items()
-        if len(v)
-    ]
-    chart(
-        px.timeline(
-            pd.DataFrame(rows),
-            x_start="desde",
-            x_end="hasta",
-            y="bloque",
-            color="bloque",
-            title="Fechas de separación y embargo",
-        ),
-        250,
-    )
-    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-    st.caption(
-        f"Embargo estricto de {config.horizon} días en cada frontera y en cada fold. Los porcentajes son "
-        "aproximados por fechas únicas; eventos simultáneos siempre permanecen juntos."
-    )
-    if any(int(parts[k].target.sum()) < 10 for k in ["Entrenamiento", "Validación", "Prueba"]):
-        st.warning(
-            "Hay menos de 10 positivos en al menos un bloque. Las estimaciones pueden variar mucho; "
-            "revisa los conteos y los folds omitidos antes de interpretar el ranking."
-        )
-    with st.form("training"):
-        left, right = st.columns([2, 1])
-        models = left.multiselect(
-            "Familias a comparar", FAMILIES, default=["Regresión logística", "Random Forest", "Boosting"]
-        )
-        sets = right.multiselect("Conjuntos de variables", ["F19", "F25"], default=["F19", "F25"])
-        folds = right.selectbox("Folds temporales", [3, 4], index=0)
-        tune = st.checkbox("Comparar dos configuraciones por familia (mayor tiempo de entrenamiento)")
-        st.caption(
-            "Boosting usa HistGradientBoosting de scikit-learn. Stacking combina logística y Random Forest "
-            "con predicciones temporales fuera de muestra. Siempre se incluyen dos referencias simples."
-        )
-        submitted = st.form_submit_button("Entrenar y evaluar", type="primary", width="stretch")
-    if submitted:
-        if not models or not sets:
-            st.error("Selecciona al menos una familia y un conjunto de variables.")
-            return
-        bar = st.progress(0, text="Preparando experimento…")
-        try:
-            bundle = train_experiment(
-                catalog,
-                config,
-                TrainConfig(tuple(sets), tuple(models), folds, tune),
-                lambda fraction, text: bar.progress(fraction, text=text),
+    with tab_topics:
+        left, right = st.columns(2)
+        with left:
+            teachers = teacher_rows(subset)
+            top_tutors = (teachers.loc[teachers["rol"].isin(["tutor", "sin especificar"])]
+                          .groupby("docente")["archivo_pdf"].nunique().sort_values(ascending=False).head(12))
+            chart(
+                px.bar(
+                    x=top_tutors.values,
+                    y=top_tutors.index,
+                    orientation="h",
+                    labels={"x": "Tesis dirigidas", "y": "Tutor"},
+                    title="Tutores con más tesis en la vista",
+                ),
+                420,
             )
-            bundle["metadata"]["source"] = st.session_state.source
-            store.save_experiment(bundle)
-            st.session_state.bundle = bundle
-            st.session_state.pop("external", None)
-            st.success("Entrenamiento completado y guardado. Abre Evaluación para revisar las métricas.")
-        except (ValueError, OSError) as exc:
-            st.error(str(exc))
-    bundle = st.session_state.get("bundle")
-    if bundle:
-        st.subheader("Selección del experimento activo")
-        st.write("**Candidato elegido por CV:**", bundle["metadata"]["selected"])
-        st.dataframe(
-            bundle["results"][["candidato", "CV_AP", "folds_evaluables", "seleccionable", "umbral"]],
-            hide_index=True,
-            width="stretch",
-        )
-        with st.expander("Auditoría de folds y parámetros"):
-            st.dataframe(bundle["folds"], hide_index=True, width="stretch")
-            st.json(bundle["metadata"]["parameters"], expanded=False)
-            for failure in bundle["metadata"]["failures"]:
-                st.warning(failure)
-
-
-def evaluation_page():
-    st.html('<div class="eyebrow">03 / EVALUACIÓN</div>')
-    st.title("Evidencia antes de decisiones")
-    bundle = get_bundle()
-    if bundle is None:
-        return
-    results = bundle["results"]
-    st.caption(
-        "Orden por elegibilidad y AP de CV. Sólo se seleccionan candidatos con todos los folds comparables evaluados. "
-        "Las columnas AP/ROC/recall corresponden a prueba y no eligen al ganador. "
-        "AP es Average Precision, una síntesis de precisión–recall; no es el área trapezoidal."
-    )
-    st.dataframe(results.drop(columns="probability"), hide_index=True, width="stretch")
-    key = st.selectbox("Inspeccionar candidato", results.candidato.tolist())
-    pset = bundle["predictions"][key]
-    test = bundle["partitions"]["Prueba"]
-    y, p = test.target.astype(int).to_numpy(), pset["test"]
-    row = results.set_index("candidato").loc[key]
-    st.caption(pset["threshold_note"] + f" Umbral guardado: {pset['threshold']:.6f}.")
-    threshold = st.slider(
-        "Simular umbral en prueba (exploratorio)",
-        0.0,
-        1.0,
-        float(pset["threshold"]),
-        0.001,
-        key="sim_threshold_" + key,
-    )
-    st.caption(
-        "La simulación no modifica el modelo guardado ni su umbral. Usar repetidamente la prueba para "
-        "decidir el umbral convierte este bloque en exploratorio; confirma luego con datos externos."
-    )
-    current = metrics(y, p, threshold, bool(row.probability))
-    cols = st.columns(5)
-    for col, label, value in zip(
-        cols,
-        ["AP", "Recall", "Precisión", "F2", "Tasa_señales"],
-        [current[k] for k in ["AP", "Recall", "Precisión", "F2", "Tasa_señales"]],
-    ):
-        col.metric(label.replace("_", " "), "No definida" if value is None else f"{value:.3f}")
-    left, right = st.columns(2)
-    with left:
-        if y.sum():
-            precision, recall, _ = precision_recall_curve(y, p)
-            fig = px.line(
-                x=recall, y=precision, labels={"x": "Recall", "y": "Precisión"}, title="Precisión–recall"
+            st.caption("Docentes separados por persona, con nombres normalizados. "
+                       "Se cuentan PDFs distintos por tutor; los asesores se excluyen de este gráfico.")
+        with right:
+            cluster_counts = subset["cluster_tematico"].value_counts().sort_index()
+            chart(
+                px.bar(
+                    x=cluster_counts.index.astype(str),
+                    y=cluster_counts.values,
+                    labels={"x": "Clúster", "y": "Tesis"},
+                    title="Tamaño de los clústeres temáticos",
+                ),
+                240,
             )
-            fig.add_hline(y=float(y.mean()), line_dash="dash", annotation_text="Prevalencia de prueba")
-            chart(fig)
-        else:
-            st.info("Prueba sin positivos: AP y recall no definidos.")
-        matrix = confusion_matrix(y, (p >= threshold).astype(int), labels=[0, 1])
-        chart(
-            px.imshow(
-                matrix,
-                text_auto=True,
-                x=["Sin señal", "Con señal"],
-                y=["Real negativo", "Real positivo"],
-                color_continuous_scale="Teal",
-                title="Matriz de confusión · umbral simulado",
-            ),
-            300,
-        )
-    with right:
-        if len(np.unique(y)) == 2:
-            fpr, tpr, _ = roc_curve(y, p)
-            fig = px.line(
-                x=fpr, y=tpr, labels={"x": "Tasa de falsos positivos", "y": "Recall"}, title="Curva ROC"
-            )
-            fig.add_shape(type="line", x0=0, y0=0, x1=1, y1=1, line=dict(dash="dash", color="#9AA6B2"))
-            chart(fig)
-        weekly = pd.DataFrame({"fecha": test.time, "score": p, "real": y})
-        chart(
-            px.scatter(
-                weekly,
-                x="fecha",
-                y="score",
-                color="real",
-                title="Scores a lo largo de la prueba",
-                labels={"fecha": "Fecha UTC"},
-            ),
-            300,
-        )
-    constant_ap = results.loc[results.modelo == "Constante", "AP"].iloc[0]
-    activity_ap = results.loc[results.modelo == "Actividad reciente", "AP"].iloc[0]
-    if pd.notna(row.AP) and pd.notna(activity_ap):
-        st.info(
-            f"AP del candidato: {row.AP:.3f} · referencia constante: {constant_ap:.3f} · "
-            f"actividad reciente: {activity_ap:.3f}. "
-            + (
-                "El candidato no supera a la regla de actividad en esta prueba."
-                if row.AP <= activity_ap
-                else "La mejora observada necesita confirmación en un catálogo externo."
-            )
-        )
-    with st.expander("Incertidumbre y calibración"):
-        if st.button("Calcular IC 95% por bloques temporales"):
-            ci = block_intervals(y, p, test.time, bundle["metadata"]["feature_config"]["horizon"])
-            st.json(ci)
-            st.caption(
-                "200 réplicas; se omiten réplicas de una sola clase. Bloques de al menos 7 días y del tamaño "
-                "del horizonte. IC exploratorios con pocos positivos y posible dependencia espacial."
-            )
-        if row.probability:
-            observed, predicted = calibration_curve(y, p, n_bins=5, strategy="quantile")
-            fig = go.Figure(go.Scatter(x=predicted, y=observed, mode="lines+markers", name="Observado"))
-            fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", name="Ideal", line=dict(dash="dash")))
-            fig.update_layout(
-                title="Diagnóstico de calibración",
-                xaxis_title="Salida media",
-                yaxis_title="Frecuencia observada",
-            )
-            chart(fig, 280)
-            st.caption(
-                f"Brier: {current['Brier']:.4f}. El balanceo de clases puede distorsionar las probabilidades; "
-                "la app presenta salidas como scores, sin garantizar calibración."
-            )
-        else:
-            st.info(
-                "Este candidato produce un score de ranking. Se omite Brier y el diagnóstico probabilístico."
-            )
-    with st.expander("Explicar variables en validación"):
-        if row.modelo in ["Constante", "Actividad reciente"]:
-            st.write(
-                "Referencia constante: prevalencia de entrenamiento. Actividad reciente: transformación monótona "
-                "de eventos en la celda durante los 30 días anteriores, escalada con entrenamiento."
-            )
-        elif st.button("Calcular importancia por permutación"):
-            try:
-                with st.spinner("Permutando variables de validación…"):
-                    imp = importance(bundle, key)
-                chart(
-                    px.bar(
-                        imp.head(15).sort_values("importancia"),
-                        y="variable",
-                        x="importancia",
-                        orientation="h",
-                        title="Caída de AP al permutar · validación",
+            terms = get_cluster_terms()
+            if terms:
+                st.write("**Términos dominantes por clúster**")
+                st.dataframe(
+                    pd.DataFrame(
+                        [{"clúster": key, "términos": ", ".join(value)} for key, value in terms.items()]
                     ),
-                    420,
+                    hide_index=True,
+                    width="stretch",
                 )
-                st.dataframe(imp, hide_index=True)
-            except ValueError as exc:
-                st.warning(str(exc))
-    export = test[["id", "time", "target"]].copy()
-    export["score"], export["señal"] = p, p >= threshold
-    st.download_button(
-        "Descargar predicciones de prueba", csv_bytes(export), "predicciones_prueba.csv", "text/csv"
-    )
-    st.download_button(
-        "Descargar comparación",
-        csv_bytes(results.drop(columns="probability")),
-        "comparacion_modelos.csv",
-        "text/csv",
-    )
+        st.write("**Rigor medio por clúster**")
+        cluster_summary = (
+            subset.groupby("cluster_tematico", dropna=False)["indice_rigor_academico"]
+            .agg(["count", "mean", "median", "std"])
+            .reset_index()
+            .rename(columns={"count": "tesis", "mean": "media", "median": "mediana", "std": "desv."})
+        )
+        st.dataframe(cluster_summary, hide_index=True, width="stretch")
+    with tab_structure:
+        compliance = (subset[list(SECTION_LABELS)].mean() * 100).rename(
+            {key: label for key, label in SECTION_LABELS.items()}
+        )
+        chart(
+            px.bar(
+                x=compliance.values,
+                y=compliance.index,
+                orientation="h",
+                labels={"x": "% de tesis que cumplen", "y": ""},
+                title="Cumplimiento de secciones reglamentarias",
+                range_x=[0, 100],
+            ),
+            420,
+        )
+        st.dataframe(
+            subset[
+                ["archivo_pdf", "titulo", "autores", "fecha", "modalidad", "indice_rigor_academico", "anomalia"]
+            ].sort_values("indice_rigor_academico", ascending=False),
+            hide_index=True,
+            width="stretch",
+        )
 
 
-def new_data_page(catalog, store):
-    st.html('<div class="eyebrow">04 / NUEVOS DATOS</div>')
-    st.title("El proyecto sigue aprendiendo")
-    st.write(
-        "Carga eventos posteriores al catálogo de un experimento para evaluarlo con el modelo congelado. "
-        "Si incorporas historia adicional al catálogo, podrás crear después una nueva versión del modelo."
-    )
-    st.download_button(
-        "Descargar plantilla CSV",
-        csv_bytes(pd.DataFrame(columns=REQUIRED + ["id", "place", "magType", "magSource"])),
-        "plantilla_eventos.csv",
-        "text/csv",
-    )
-    st.caption(
-        "time en ISO 8601 (UTC), coordenadas en grados, depth en km y mag numérica. "
-        "La plantilla no contiene datos sintéticos. Opcionales: nst, gap, dmin, rms y errores de medición."
-    )
-    upload_tab, manual_tab = st.tabs(["Cargar lote CSV", "Registrar un evento"])
-    with upload_tab:
-        upload = st.file_uploader("Nuevos eventos", type="csv", key="new_upload")
-        if upload:
-            try:
-                import hashlib
-
-                digest = hashlib.sha256(upload.getvalue()).hexdigest()
-                raw_new = read_csv(upload.getvalue())
-                clean_new = clean_catalog(raw_new)
-                if st.session_state.get("pending_upload_sha") != digest:
-                    st.session_state.pending_new = clean_new.frame
-                    st.session_state.pending_upload_sha = digest
-                st.caption(
-                    f"Válidos: {len(clean_new.frame)} · rechazos: {len(clean_new.rejected)} · duplicados: {clean_new.audit['duplicados']}"
-                )
-                if len(clean_new.rejected):
-                    st.dataframe(clean_new.rejected, hide_index=True)
-            except ValueError as exc:
-                st.error(str(exc))
-                st.session_state.pop("pending_new", None)
-    with manual_tab:
-        with st.form("event"):
-            left, middle, right = st.columns(3)
-            date = left.date_input("Fecha UTC", value=catalog.time.max().date())
-            time = left.time_input("Hora UTC", value=datetime.min.time())
-            lat = middle.number_input("Latitud", -90.0, 90.0, -21.0, step=0.01)
-            lon = middle.number_input("Longitud", -180.0, 180.0, -68.0, step=0.01)
-            depth = right.number_input("Profundidad (km)", -10.0, 800.0, 100.0)
-            mag = right.number_input("Magnitud", -2.0, 10.0, 4.0, step=0.1)
-            place = st.text_input("Referencia geográfica", "Bolivia")
-            if st.form_submit_button("Preparar evento"):
-                timestamp = datetime.combine(date, time).replace(tzinfo=timezone.utc).isoformat()
-                new = pd.DataFrame(
-                    [dict(time=timestamp, latitude=lat, longitude=lon, depth=depth, mag=mag, place=place)]
-                )
-                st.session_state.pending_new = clean_catalog(new).frame
-                st.success("Evento preparado. Revisa el lote antes de evaluarlo o incorporarlo.")
-    pending = st.session_state.get("pending_new")
-    if pending is None:
-        st.info("Carga un CSV o prepara un evento para continuar.")
-        return
-    st.subheader("Lote preparado")
+def corpus_page(corpus: pd.DataFrame):
+    st.html('<div class="eyebrow">02 / CORPUS</div>')
+    st.title("Cada tesis, con su expediente")
+    search = st.text_input("Buscar por título, autor o tutor", "")
+    view = corpus.copy()
+    if search.strip():
+        needle = search.strip().lower()
+        mask = (
+            view["titulo"].str.lower().str.contains(needle, na=False, regex=False)
+            | view["autores"].str.lower().str.contains(needle, na=False, regex=False)
+            | view["tutores"].str.lower().str.contains(needle, na=False, regex=False)
+        )
+        view = view[mask]
+    only_anomalies = st.checkbox("Mostrar sólo anomalías estructurales", value=False)
+    if only_anomalies:
+        view = view[view["anomalia"]]
+    st.caption(f"{len(view)} tesis coinciden.")
     st.dataframe(
-        pending[["id", "time", "latitude", "longitude", "depth", "mag", "country"]],
+        view[
+            [
+                "archivo_pdf",
+                "titulo",
+                "autores",
+                "fecha",
+                "tutores",
+                "modalidad",
+                "cluster_tematico",
+                "indice_rigor_academico",
+                "nota_numeral",
+                "anomalia",
+            ]
+        ].sort_values("indice_rigor_academico", ascending=False),
         hide_index=True,
         width="stretch",
     )
-    duplicate_ids = int(pending.id.isin(catalog.id).sum())
-    if duplicate_ids:
-        st.warning(
-            f"{duplicate_ids} IDs ya existen en el catálogo activo. La incorporación conserva esos eventos originales."
+    if view.empty:
+        return
+    options = {
+        f"{row.archivo_pdf} · {row.titulo[:78]}": row.archivo_pdf for row in view.itertuples()
+    }
+    selected = st.selectbox("Abrir ficha de tesis", list(options))
+    filename = options[selected]
+    row = corpus.loc[corpus["archivo_pdf"] == filename].iloc[0]
+    st.divider()
+    left, right = st.columns([1.6, 1])
+    with left:
+        st.subheader(row["titulo"])
+        st.write(f"**Autor:** {row['autores']} · **Año:** {row['fecha']} · **Tutor:** {row['tutores']}")
+        st.write(f"**Mención:** {row['mencion']} · **Modalidad:** {row['modalidad']} · **Clúster:** {row['cluster_tematico']}")
+        metadata = get_metadata()
+        meta_row = metadata.loc[metadata["archivo_pdf"] == filename]
+        if not meta_row.empty:
+            meta = meta_row.iloc[0]
+            if pd.notna(meta.get("materias")):
+                st.write(f"**Materias:** {meta['materias']}")
+            if pd.notna(meta.get("resumen")):
+                with st.expander("Resumen del repositorio"):
+                    st.write(str(meta["resumen"])[:2500])
+        if pd.notna(row["nota_numeral"]):
+            st.success(f"Nota numeral del acta: {row['nota_numeral']:.0f}")
+        st.metric("Índice de rigor académico", f"{row['indice_rigor_academico']:.2f} / 100")
+        sections = pd.DataFrame(
+            [
+                {"sección": SECTION_LABELS[key], "presente": bool(row[key])}
+                for key in SECTION_LABELS
+            ]
         )
-    left, right = st.columns(2)
-    bundle = st.session_state.get("bundle")
-    if left.button("Evaluar con modelo congelado", type="primary", disabled=bundle is None):
-        try:
-            external = score_new(bundle, pending)
-            store.save_validation(bundle, pending, *external)
-            st.session_state.external = external
-            st.session_state.external_id = fingerprint(pending) + bundle["metadata"]["id"]
-            st.success("Validación guardada en el registro local.")
-        except ValueError as exc:
-            st.error(str(exc))
-    if right.button("Incorporar al catálogo y guardar"):
-        unique = pending.loc[~pending.id.isin(catalog.id)]
-        try:
-            merged = clean_catalog(pd.concat([catalog, unique], ignore_index=True)).frame
-            store.save_catalog(merged)
-            # Conserva el experimento congelado para comparaciones; nunca lo reentrena implícitamente.
-            st.session_state.raw = merged
-            st.session_state.source = "Catálogo local actualizado"
-            st.success(
-                f"Catálogo guardado con {len(merged):,} eventos. Crea un nuevo experimento en Modelo para reentrenar."
+        st.dataframe(sections, hide_index=True, width="stretch")
+        with st.expander("Conclusiones extraídas del PDF"):
+            st.write(str(row.get("conclusiones_texto", ""))[:4000])
+        if st.button("Auditar este PDF en la pestaña Auditoría"):
+            st.session_state["corpus_pdf_choice"] = filename
+            st.info("Selección guardada. Abre «Auditoría PDF» y pulsa Ejecutar auditoría.")
+    with right:
+        radar_metrics = [metric for metric in NUMERIC_METRICS if metric in corpus]
+        maxima = {metric: float(corpus[metric].quantile(0.95)) for metric in radar_metrics}
+        values = [
+            min(1.0, float(row[metric]) / maxima[metric]) if maxima[metric] else 0.0
+            for metric in radar_metrics
+        ]
+        fig = go.Figure(
+            go.Scatterpolar(
+                r=values + values[:1],
+                theta=[METRIC_LABELS.get(metric, metric) for metric in radar_metrics]
+                + [METRIC_LABELS.get(radar_metrics[0], radar_metrics[0])],
+                fill="toself",
+                name=filename,
             )
-            st.rerun()
-        except (ValueError, OSError) as exc:
-            st.error(str(exc))
-    if bundle is None:
-        st.caption("Entrena o abre un experimento para habilitar la evaluación externa.")
-    external = st.session_state.get("external")
-    if (
-        external
-        and bundle
-        and st.session_state.get("external_id") == fingerprint(pending) + bundle["metadata"]["id"]
-    ):
-        rows, result, drift = external
-        st.subheader("Resultado del modelo congelado")
-        st.caption("Candidato: " + bundle["metadata"]["selected"])
-        st.dataframe(
-            rows[["id", "time", "mag", "score", "señal", "estado", "target"]],
-            hide_index=True,
-            width="stretch",
         )
-        if result:
-            st.write("Métricas sólo de los eventos con horizonte completamente observado:")
-            st.dataframe(pd.DataFrame([result]), hide_index=True)
-        else:
-            st.info(
-                "Se generaron scores. Aún no hay etiquetas evaluables: carga el catálogo posterior que cubra "
-                "todo el horizonte. Un evento sin futuro observable permanece pendiente."
-            )
-        st.download_button(
-            "Descargar validación externa",
-            csv_bytes(rows.drop(columns="future_max")),
-            "validacion_externa.csv",
-            "text/csv",
+        fig.update_layout(
+            title="Perfil relativo (p95 del corpus = 1)",
+            polar={"radialaxis": {"visible": True, "range": [0, 1]}},
+            showlegend=False,
         )
-        with st.expander("Cobertura y cambios respecto al entrenamiento"):
-            st.dataframe(drift, hide_index=True, width="stretch")
-            missing = (
-                pending[["nst", "gap", "dmin", "rms", "horizontalError", "depthError", "magError", "magNst"]]
-                .isna()
-                .mean()
-            )
-            st.write("Fracción ausente en indicadores de calidad:")
-            st.dataframe(missing.rename_axis("variable").reset_index(name="ausencia"), hide_index=True)
-            gap = pending.time.min() - bundle["catalog"].time.max()
-            st.write(
-                f"Distancia entre fin histórico y primer evento nuevo: {gap.total_seconds() / 86400:.1f} días."
-            )
-            st.warning(
-                "Estas comprobaciones describen cobertura y rangos; no prueban estabilidad del modelo. "
-                "Para validar, el lote debe contener todos los eventos capturados durante el intervalo, "
-                "con la misma región y criterio de selección del catálogo original."
-            )
-
-
-def registry_page(store):
-    st.html('<div class="eyebrow">05 / REGISTRO Y DESPLIEGUE</div>')
-    st.title("Cada resultado tiene una versión")
-    records = store.experiments()
-    if records:
-        st.dataframe(
-            pd.DataFrame(
+        chart(fig, 380)
+        similar = similar_documents(
+            " ".join(
                 [
-                    {
-                        "id": r["id"],
-                        "fecha_UTC": r["created_at"],
-                        "seleccionado": r["selected"],
-                        "eventos": r["catalog_rows"],
-                        "catálogo_SHA256": r["catalog_sha256"][:16],
-                    }
-                    for r in records
+                    str(row.get("titulo", "")),
+                    str(row.get("texto_completo", ""))[2000:9000],
+                    str(row.get("conclusiones_texto", ""))[:2500],
                 ]
             ),
+            corpus,
+            get_index(),
+            top_n=4,
+            exclude_pdf=filename,
+        )
+        st.write("**Tesis más similares**")
+        st.dataframe(
+            similar.assign(similitud=lambda frame: (frame["similitud"] * 100).round(1))
+            .rename(columns={"similitud": "similitud_%"}),
             hide_index=True,
             width="stretch",
         )
-        choice = st.selectbox(
-            "Experimento guardado",
-            [r["id"] for r in records],
-            format_func=lambda ident: next(
-                r["created_at"][:19] + " · " + r["selected"] for r in records if r["id"] == ident
-            ),
+    st.download_button(
+        "Descargar ficha (JSON)",
+        json.dumps(
+            {
+                "archivo_pdf": filename,
+                "titulo": row["titulo"],
+                "autores": row["autores"],
+                "fecha": int(row["fecha"]) if pd.notna(row["fecha"]) else None,
+                "indice_rigor_academico": float(row["indice_rigor_academico"]),
+                "secciones": {key: bool(row[key]) for key in SECTION_LABELS},
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        f"ficha_{filename}.json",
+        "application/json",
+    )
+
+
+def render_audit(audit: dict, percentiles: dict):
+    score = audit["puntaje"]
+    left, right = st.columns([1, 2])
+    with left:
+        fig = go.Figure(
+            go.Indicator(
+                mode="gauge+number",
+                value=score,
+                number={"suffix": " / 100"},
+                title={"text": "Puntaje de rigor"},
+                gauge={
+                    "axis": {"range": [0, 100]},
+                    "bar": {"color": "#155B66"},
+                    "steps": [
+                        {"range": [0, 60], "color": "#F3D6D9"},
+                        {"range": [60, 72], "color": "#F7E7C6"},
+                        {"range": [72, 100], "color": "#D6EBDD"},
+                    ],
+                    "threshold": {"line": {"color": "#102A43", "width": 3}, "value": score},
+                },
+            )
         )
-        if st.button("Abrir experimento congelado"):
-            try:
-                st.session_state.bundle = store.load_experiment(choice)
-                st.session_state.pop("external", None)
-                st.success("Experimento cargado. Evaluación usa su propio catálogo y sus bloques originales.")
-            except (ValueError, OSError) as exc:
-                st.error(str(exc))
+        chart(fig, 300)
+        st.html(
+            f'<div class="verdict"><b>{audit["veredicto"]}</b><br>'
+            f'<span style="color:#63758B">Banda: {audit_verdict_band(score)} · '
+            f'{audit["paginas"]} páginas · {audit["total_citas"]} citas</span></div>'
+        )
+    with right:
+        cols = st.columns(4)
+        cols[0].metric("Páginas", audit["paginas"])
+        cols[1].metric("Citas", audit["total_citas"])
+        cols[2].metric("Estructura", f"{audit['pct_estructura'] * 100:.0f}%")
+        coherence = audit["coh_aplicativo"]
+        cols[3].metric("Coh. aplicativo", "s/d" if np.isnan(coherence) else f"{coherence:.2f}")
+        cols = st.columns(4)
+        conclusion = audit["coh_conclusiones"]
+        cols[0].metric("Coh. conclusiones", "s/d" if np.isnan(conclusion) else f"{conclusion:.2f}")
+        cols[1].metric("Burstiness", "s/d" if np.isnan(audit["burstiness"]) else f"{audit['burstiness']:.2f}")
+        cols[2].metric("MATTR", "s/d" if np.isnan(audit["riqueza_lexica"]) else f"{audit['riqueza_lexica']:.3f}")
+        cols[3].metric("Citas APA / IEEE", f"{audit['citas_apa']} / {audit['citas_ieee']}")
+        st.write("**Diagnóstico explicable**")
+        if audit["diagnosticos"]:
+            for message in audit["diagnosticos"]:
+                st.warning(message)
+        else:
+            st.success("Cumple los umbrales estructurales, bibliográficos y de coherencia del corpus.")
+
+    st.subheader("Secciones reglamentarias")
+    sections = pd.DataFrame(
+        [
+            {"sección": SECTION_LABELS[key], "presente": present}
+            for key, present in audit["secciones"].items()
+        ]
+    )
+    left, right = st.columns([1, 1.4])
+    with left:
+        st.dataframe(sections, hide_index=True, width="stretch")
+    with right:
+        fig = px.bar(
+            sections,
+            x="sección",
+            y=[1 if value else 0 for value in sections["presente"]],
+            color="presente",
+            color_discrete_map={True: "#4E8B62", False: "#A24E5A"},
+            labels={"y": "Presente", "sección": ""},
+            title="Cobertura de secciones",
+        )
+        fig.update_yaxes(range=[0, 1.1], tickvals=[0, 1], ticktext=["Falta", "Presente"])
+        chart(fig, 300)
+
+    st.subheader("Comparación con el corpus")
+    st.caption(
+        "La coherencia se calcula con TF-IDF y se calibra por cuantiles a la escala de embeddings del "
+        "cuaderno. Así el puntaje es comparable con los percentiles históricos sin instalar torch."
+    )
+    left, right = st.columns(2)
+    with left:
+        metrics = [
+            ("num_paginas", audit["paginas"]),
+            ("total_citas_detectadas", audit["total_citas"]),
+            ("coh_obj_apl_v2", audit["coh_aplicativo"]),
+            ("coh_obj_con_v2", audit["coh_conclusiones"]),
+            ("burstiness_oraciones", audit["burstiness"]),
+            ("riqueza_lexica_mattr", audit["riqueza_lexica"]),
+        ]
+        rows = []
+        for key, value in metrics:
+            if key not in percentiles or value is None or (isinstance(value, float) and np.isnan(value)):
+                continue
+            reference = percentiles[key]
+            rows.append(
+                {
+                    "métrica": METRIC_LABELS.get(key, key),
+                    "documento": round(float(value), 3),
+                    "p25": round(reference["p25"], 3),
+                    "mediana": round(reference["p50"], 3),
+                    "p75": round(reference["p75"], 3),
+                }
+            )
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        st.caption(
+            f"Coherencia léxica sin calibrar: aplicativo "
+            f"{audit['coh_aplicativo_lexico']:.3f} · conclusiones {audit['coh_conclusiones_lexico']:.3f}."
+        )
+    with right:
+        if not np.isnan(audit["coh_aplicativo"]) or not np.isnan(audit["coh_conclusiones"]):
+            labels = ["Objetivos ↔ aplicativo", "Objetivos ↔ conclusiones"]
+            values = [
+                0.0 if np.isnan(audit["coh_aplicativo"]) else audit["coh_aplicativo"],
+                0.0 if np.isnan(audit["coh_conclusiones"]) else audit["coh_conclusiones"],
+            ]
+            medians = [
+                percentiles["coh_obj_apl_v2"]["p50"],
+                percentiles["coh_obj_con_v2"]["p50"],
+            ]
+            fig = go.Figure(
+                data=[
+                    go.Bar(name="Documento", x=labels, y=values, marker_color="#155B66"),
+                    go.Bar(name="Mediana UMSA", x=labels, y=medians, marker_color="#C48B2E"),
+                ]
+            )
+            fig.update_layout(barmode="group", title="Coherencia léxica frente a la referencia")
+            chart(fig, 320)
+        else:
+            st.info("No se pudieron extraer secciones suficientes para medir coherencia.")
+
+    st.subheader("Tesis similares en el repositorio")
+    if audit["similares"]:
+        similar = pd.DataFrame(audit["similares"])
+        similar["similitud"] = (similar["similitud"] * 100).round(1)
+        st.dataframe(
+            similar.rename(
+                columns={
+                    "archivo_pdf": "archivo",
+                    "similitud": "similitud_%",
+                    "indice_rigor_academico": "rigor",
+                }
+            ),
+            hide_index=True,
+            width="stretch",
+        )
     else:
-        st.info("Los entrenamientos se guardan automáticamente en el registro local.")
-    bundle = st.session_state.get("bundle")
-    if bundle:
-        st.subheader("Ficha del experimento activo")
-        st.json(bundle["metadata"], expanded=False)
-        payload = BytesIO()
-        with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr("metadata.json", json.dumps(bundle["metadata"], ensure_ascii=False, indent=2))
-            archive.writestr("resultados.csv", csv_bytes(bundle["results"].drop(columns="probability")))
-            archive.writestr("folds.csv", csv_bytes(bundle["folds"]))
-            archive.writestr("catalogo_snapshot.csv", csv_bytes(bundle["catalog"]))
-        st.download_button(
-            "Descargar evidencia del experimento (.zip)",
-            payload.getvalue(),
-            "experimento.zip",
-            "application/zip",
-        )
-    validations = store.validations()
-    if validations:
-        st.subheader("Validaciones externas guardadas")
-        st.dataframe(
-            pd.DataFrame(
-                [{k: v for k, v in r.items() if k not in ("metrics", "catalog_sha256")} for r in validations]
+        st.info("Sin coincidencias internas para este documento.")
+
+    with st.expander("Fragmentos extraídos para la auditoría"):
+        for key, label in (
+            ("fragmento_objetivos", "Objetivos / planteamiento"),
+            ("fragmento_aplicativo", "Marco aplicativo"),
+            ("fragmento_conclusiones", "Conclusiones"),
+        ):
+            st.write(f"**{label}**")
+            st.caption(audit.get(key, "") or "No se detectó la sección.")
+
+    st.subheader("Contraste con literatura abierta")
+    st.caption("La consulta usa OpenAlex y requiere conexión a internet. Es opcional y no altera el puntaje.")
+    if st.button("Buscar referentes en OpenAlex"):
+        with st.spinner("Consultando OpenAlex…"):
+            query, papers = openalex_search(audit.get("_texto", ""))
+        st.session_state["openalex"] = {"query": query, "papers": papers, "archivo": audit["archivo"]}
+    result = st.session_state.get("openalex")
+    if result and result.get("archivo") == audit["archivo"]:
+        st.write(f"**Consulta:** {result['query']}")
+        if result["papers"]:
+            st.dataframe(pd.DataFrame(result["papers"]), hide_index=True, width="stretch")
+        else:
+            st.info("Sin resultados externos o sin conexión.")
+
+    st.download_button(
+        "Descargar informe (JSON)",
+        json.dumps(audit_to_json(audit), ensure_ascii=False, indent=2, default=str),
+        f"auditoria_{Path(audit['archivo']).stem}.json",
+        "application/json",
+    )
+
+
+def audit_page(corpus: pd.DataFrame, store: AuditStore):
+    st.html('<div class="eyebrow">03 / AUDITORÍA DE PDF</div>')
+    st.title("¿Qué le falta a este documento?")
+    st.write(
+        "Sube un PDF nuevo o elige uno del repositorio. El informe verifica secciones reglamentarias, "
+        "citas, coherencia objetivos↔aplicativo↔conclusiones, estilometría y tesis similares."
+    )
+    tab_upload, tab_corpus = st.tabs(["Subir PDF", "Elegir del corpus"])
+    source = None
+    filename = None
+    cache_key = None
+    with tab_upload:
+        uploaded = st.file_uploader("Documento PDF", type="pdf", key="pdf_upload")
+        if uploaded is not None:
+            source = uploaded.getvalue()
+            filename = uploaded.name
+            cache_key = f"upload::{filename}::{len(source)}"
+    with tab_corpus:
+        pdfs = available_pdfs()
+        if pdfs:
+            default = st.session_state.get("corpus_pdf_choice")
+            index = pdfs.index(default) if default in pdfs else 0
+            choice = st.selectbox("PDF del corpus", pdfs, index=index)
+            if st.button("Usar este PDF"):
+                st.session_state["corpus_pdf_choice"] = choice
+                st.session_state.pop("audit_result", None)
+            if st.session_state.get("corpus_pdf_choice"):
+                source = "corpus"
+                filename = st.session_state["corpus_pdf_choice"]
+                cache_key = f"corpus::{filename}"
+        else:
+            st.info("La carpeta dataset/PDFs no está disponible.")
+
+    if source is None:
+        st.info("Selecciona un PDF para comenzar.")
+        return
+
+    st.caption(f"Documento listo: **{filename}**")
+    run = st.button("Ejecutar auditoría", type="primary")
+    if run:
+        try:
+            with st.spinner("Extrayendo texto y calculando métricas…"):
+                if source == "corpus":
+                    result = audit_corpus_pdf(filename)
+                else:
+                    result = audit_document(source, filename, corpus, get_index(), get_percentiles())
+            store.save_audit(audit_to_json(result))
+            st.session_state["audit_result"] = result
+            st.session_state["audit_key"] = cache_key
+            st.success("Auditoría calculada y guardada en el registro local.")
+        except Exception as exc:  # noqa: BLE001 - se muestra al usuario
+            st.error(f"No se pudo auditar el PDF: {exc}")
+    result = st.session_state.get("audit_result")
+    if result and st.session_state.get("audit_key") == cache_key:
+        st.divider()
+        render_audit(result, get_percentiles())
+
+
+def models_page(corpus: pd.DataFrame):
+    st.html('<div class="eyebrow">04 / MODELOS Y EVIDENCIA</div>')
+    st.title("Medir antes de decidir")
+    benchmark_lesson(get_benchmark(), chart)
+
+    st.divider()
+    st.subheader("Modelo sustituto del índice de rigor")
+    st.write(
+        "Para que la app no dependa de torch ni de sentence-transformers, se entrena una regresión "
+        "logística sobre las siete métricas auditables. Es un **modelo sustituto**: reconstruye el índice "
+        "para mostrar la dirección de los pesos, no una validación predictiva independiente."
+    )
+    try:
+        model = train_rigor_model(corpus)
+    except ValueError as exc:
+        st.warning(str(exc))
+        return
+    cols = st.columns(3)
+    cols[0].metric("ROC-AUC (CV)", f"{model.auc:.3f}")
+    cols[1].metric("Exactitud (CV)", f"{model.accuracy:.3f}")
+    cols[2].metric("Umbral de alto rigor", f"{model.umbral:.2f}")
+    st.warning(
+        "El AUC es alto por construcción: la etiqueta se deriva del mismo índice que usa estas variables. "
+        "No debe interpretarse como capacidad de predecir la nota del tribunal."
+    )
+    left, right = st.columns(2)
+    with left:
+        coefficients = model.coefficients.copy()
+        chart(
+            px.bar(
+                coefficients.sort_values("coeficiente"),
+                x="coeficiente",
+                y="etiqueta",
+                orientation="h",
+                labels={"coeficiente": "Coeficiente estandarizado", "etiqueta": ""},
+                title="Peso de cada métrica en la probabilidad de alto rigor",
             ),
+            340,
+        )
+    with right:
+        chart(
+            px.histogram(
+                model.predictions,
+                x="probabilidad_alto_rigor",
+                color=model.predictions["rigor_alto"].astype(str),
+                nbins=18,
+                labels={"probabilidad_alto_rigor": "Probabilidad estimada", "color": "Alto rigor real"},
+                title="Probabilidades fuera de muestra (CV)",
+            ),
+            340,
+        )
+    with st.expander("Predicciones y auditoría del modelo"):
+        st.dataframe(
+            model.predictions.sort_values("probabilidad_alto_rigor", ascending=False),
             hide_index=True,
             width="stretch",
         )
-        validation_id = st.selectbox(
-            "Revisar validación",
-            [v["id"] for v in validations],
+        st.dataframe(model.coefficients, hide_index=True, width="stretch")
+
+    st.divider()
+    st.subheader("Validación contra notas reales del tribunal")
+    validation = note_validation(corpus)
+    if validation["spearman"] is None:
+        st.info("No hay suficientes notas numerales para calcular correlaciones.")
+    else:
+        cols = st.columns(4)
+        cols[0].metric("Tesis con nota", validation["n"])
+        cols[1].metric("Spearman", f"{validation['spearman']:.3f}")
+        cols[2].metric("p-value", f"{validation['p_value']:.3f}")
+        cols[3].metric("Pearson", f"{validation['pearson']:.3f}")
+        notes = corpus[corpus["nota_numeral"].notna()]
+        chart(
+            px.scatter(
+                notes,
+                x="indice_rigor_academico",
+                y="nota_numeral",
+                hover_data=["archivo_pdf", "titulo"],
+                labels={
+                    "indice_rigor_academico": "Índice de rigor",
+                    "nota_numeral": "Nota numeral del acta",
+                },
+                title="Índice de rigor vs. nota real",
+            ),
+            340,
+        )
+        st.caption(
+            "La muestra es pequeña: la correlación es exploratoria y no demuestra validez predictiva. "
+            "Las notas provienen de las actas cuando el texto permitió extraerlas."
+        )
+
+    st.subheader("Correlaciones y anomalías")
+    st.dataframe(correlation_table(corpus), hide_index=True, width="stretch")
+    anomalies = corpus[corpus["anomalia"]][
+        ["archivo_pdf", "titulo", "indice_rigor_academico", "score_anomalia_if"]
+    ].sort_values("score_anomalia_if")
+    st.write("**Documentos marcados por Isolation Forest**")
+    st.dataframe(anomalies, hide_index=True, width="stretch")
+    st.caption(
+        "Isolation Forest se entrenó en el cuaderno con estructura, coherencia, citas, páginas y burstiness. "
+        "Una anomalía no implica fraude ni mala calidad: sólo un perfil atípico frente al corpus."
+    )
+
+
+def registry_page(store: AuditStore):
+    st.html('<div class="eyebrow">05 / REGISTRO</div>')
+    st.title("Cada auditoría tiene una versión")
+    records = store.audits()
+    if not records:
+        st.info("Todavía no hay auditorías guardadas. Ejecuta una desde «Auditoría PDF».")
+    else:
+        st.dataframe(pd.DataFrame(records), hide_index=True, width="stretch")
+        choice = st.selectbox(
+            "Revisar auditoría",
+            [record["id"] for record in records],
             format_func=lambda ident: next(
-                v["created_at"][:19] + " · " + str(v["eventos"]) + " eventos"
-                for v in validations
-                if v["id"] == ident
+                f"{record['created_at'][:19]} · {record['filename']} · {record['score']:.2f}"
+                for record in records
+                if record["id"] == ident
             ),
         )
-        detail = next(v for v in validations if v["id"] == validation_id)
-        report = store.validation_report(validation_id)
-        st.write(
-            "**Métricas:**",
-            detail["metrics"] if detail["metrics"] else "Futuro pendiente: métricas todavía no disponibles.",
-        )
-        st.dataframe(
-            pd.DataFrame(report["predictions"])[["id", "time", "score", "señal", "estado", "target"]],
-            hide_index=True,
-            width="stretch",
-        )
-        st.download_button(
-            "Descargar informe de validación (.json)",
-            json.dumps({"summary": detail, **report}, ensure_ascii=False, indent=2),
-            "validacion_externa.json",
+        payload = store.audit(choice)
+        cols = st.columns(4)
+        cols[0].metric("Puntaje", f"{payload.get('puntaje', 0):.2f}")
+        cols[1].metric("Páginas", payload.get("paginas", 0))
+        cols[2].metric("Citas", payload.get("total_citas", 0))
+        cols[3].metric("Estructura", f"{float(payload.get('pct_estructura', 0)) * 100:.0f}%")
+        st.write(f"**Veredicto:** {payload.get('veredicto', '')}")
+        st.json(payload, expanded=False)
+        left, right = st.columns(2)
+        left.download_button(
+            "Descargar auditoría (JSON)",
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            f"auditoria_{Path(payload.get('archivo', 'documento')).stem}.json",
             "application/json",
         )
-    st.subheader("Operación y despliegue")
+        if right.button("Eliminar auditoría del registro"):
+            store.delete_audit(choice)
+            st.rerun()
+
+    st.subheader("Procedencia y despliegue")
     st.write(
-        "El catálogo persistido y los modelos se guardan en SQLite y archivos locales dentro de `runtime/`. "
-        "Configura `SISMO_DATA_DIR` para un volumen persistente. Los CSV se validan antes de incorporarlos; "
-        "los modelos se cargan exclusivamente del registro creado por esta app."
+        "El corpus, el paquete de producción y los PDFs se leen desde `dataset/`. Las auditorías se "
+        "persisten en SQLite dentro de `runtime/`. Define `UMSA_DATA_DIR` para usar un volumen distinto."
     )
     st.code("uv sync --frozen\nuv run streamlit run app.py", language="bash")
-    st.write(
-        "La entrega incluye Docker, un volumen persistente y comprobación de salud. "
-        "Esta instancia comparte el catálogo entre usuarios: para uso empresarial externo se necesita "
-        "autenticación, control de acceso, respaldo y un proceso de aprobación de modelos."
+    st.caption(
+        f"Directorio de datos: {DATASET_DIR} · "
+        f"almacén: {store.database} · "
+        f"auditorías: {len(records)}"
     )
 
 
 def main():
     style()
-    store = Store(os.environ.get("SISMO_DATA_DIR", str(ROOT / "runtime")))
-    if "raw" not in st.session_state:
-        saved = store.load_catalog()
-        set_catalog(
-            saved if saved is not None else read_csv((ROOT / "datasets" / "query (2).csv").read_bytes()),
-            "Catálogo local guardado" if saved is not None else "Catálogo incluido · USGS CSV",
-        )
+    corpus = get_corpus()
+    store = get_store()
     with st.sidebar:
         st.html(
-            '<h2 style="color:#0F8B8D;letter-spacing:-1px">◉ SismoLab</h2><p style="color:#63758B">Inteligencia sísmica / Laboratorio</p>'
+            '<div class="eyebrow">INFORMÁTICA · UMSA</div>'
+            '<h2 style="color:#1D3B68;letter-spacing:-1px">◈ UMSA Lab</h2>'
+            '<p style="color:#536680">Observatorio de lenguaje y rigor académico</p>'
         )
-        page = st.radio(
-            "Recorrido analítico",
-            ["Resumen", "Preprocesamiento", "Modelo", "Evaluación", "Nuevos datos", "Registro"],
-            label_visibility="collapsed",
-        )
+        page = st.radio("Recorrido analítico", PAGES, label_visibility="collapsed")
         st.divider()
-        st.caption("DEFINICIÓN DEL EXPERIMENTO")
-        horizon = st.select_slider("Horizonte (días)", options=[1, 3, 7, 14, 30], value=7)
-        magnitude = st.slider("Magnitud objetivo ≥", 3.0, 8.0, 5.0, 0.1)
-        grid = st.select_slider("Celda geográfica (grados)", options=[0.25, 0.5, 1.0, 2.0], value=0.5)
-        with st.expander("Catálogo de trabajo"):
-            upload = st.file_uploader("Reemplazar catálogo en sesión", type="csv", key="catalog_upload")
-            if st.button("Utilizar archivo", disabled=upload is None):
-                try:
-                    content = read_csv(upload.getvalue())
-                    clean_catalog(content)
-                    set_catalog(content, upload.name)
-                    st.rerun()
-                except ValueError as exc:
-                    st.error(str(exc))
-            if st.button("Volver al catálogo incluido"):
-                set_catalog(
-                    read_csv((ROOT / "datasets" / "query (2).csv").read_bytes()),
-                    "Catálogo incluido · USGS CSV",
-                )
-                st.rerun()
-            if st.button("Guardar catálogo local"):
-                store.save_catalog(clean_catalog(st.session_state.raw).frame)
-                st.success("Catálogo guardado para próximas sesiones.")
+        st.caption("CORPUS DE REFERENCIA")
+        st.metric("Tesis", len(corpus))
+        st.metric("Rigor mediano", f"{corpus['indice_rigor_academico'].median():.2f}")
+        st.metric("Citas medianas", f"{corpus['total_citas_detectadas'].median():.0f}")
+        with st.expander("Archivos utilizados"):
+            st.write(
+                "- `dataset/df_maestro_final_modelos_70.parquet`\n"
+                "- `dataset/auditor_umsa_produccion.joblib`\n"
+                "- `dataset/benchmark_ml_vs_dl_umsa.csv`\n"
+                "- `dataset/PDFs/`"
+            )
+            st.caption("Generados por repositorioUMSA.ipynb.")
         st.divider()
-        st.caption("Estudio experimental · Región andina\n\nFechas y ventanas en UTC")
-    config = FeatureConfig(horizon, magnitude, grid)
-    try:
-        cleaned = clean_catalog(st.session_state.raw)
-    except ValueError as exc:
-        st.error(str(exc))
-        st.stop()
-    catalog = cleaned.frame
-    frame = featured(catalog, config)
-    bundle = st.session_state.get("bundle")
-    if bundle and (
-        bundle["metadata"]["feature_config"] != asdict(config)
-        or bundle["metadata"]["catalog_sha256"] != fingerprint(catalog)
-    ):
-        st.warning(
-            "El catálogo o la definición actual difieren del experimento activo. Evaluación y Nuevos datos "
-            "usan la versión congelada indicada en Registro. Entrena de nuevo para comparar la configuración actual."
-        )
+        st.caption("Auditoría explicable · Sin decisiones automáticas de aprobación")
+
     if page == "Resumen":
-        summary(catalog, frame, config)
-    elif page == "Preprocesamiento":
-        preprocessing(st.session_state.raw, cleaned, frame, config)
-    elif page == "Modelo":
-        model_page(catalog, frame, config, store)
-    elif page == "Evaluación":
-        evaluation_page()
-    elif page == "Nuevos datos":
-        new_data_page(catalog, store)
+        summary(corpus, store)
+    elif page == "Experimento":
+        experiment_page(corpus, get_metadata(), chart)
+    elif page == "Chat RAG":
+        chat_page(corpus)
+    elif page == "Exploración":
+        exploration(corpus)
+    elif page == "Corpus":
+        corpus_page(corpus)
+    elif page == "Auditoría PDF":
+        audit_page(corpus, store)
+    elif page == "Modelos":
+        models_page(corpus)
     elif page == "Registro":
         registry_page(store)
     st.divider()
     st.caption(
-        "SismoLab · Pipeline reproducible a partir de sismos_integrado.ipynb · Los resultados describen este catálogo y su cobertura."
+        "UMSA Auditor · Migración del cuaderno repositorioUMSA.ipynb · "
+        "El índice de rigor es una señal de apoyo, no una calificación oficial."
     )
 
 

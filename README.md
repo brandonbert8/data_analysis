@@ -1,115 +1,150 @@
-# SismoLab
+# UMSA Auditor
 
-Aplicación Streamlit en español que convierte `sismos_integrado.ipynb` en un flujo reproducible de exploración, limpieza, entrenamiento, evaluación y validación con eventos nuevos. El cuaderno original se conserva sin modificaciones.
+Panel interactivo Streamlit en español del experimento PLN de `repositorioUMSA.ipynb`: preparación del corpus, gráficos interactivos, figuras originales, similitud, clústeres, benchmark y chat con RAG sobre las tesis y la metodología. El cuaderno original se conserva sin modificaciones.
+
+El proyecto migró desde el tema anterior de sismos (`SismoLab`) hacia el corpus académico de la UMSA. Toda la lógica de análisis vive en el paquete `umsa/` y se apoya en los artefactos de `dataset/`.
 
 ## Ejecutar con uv
 
-Requisito: [uv](https://docs.astral.sh/uv/getting-started/installation/). La versión de Python está declarada en `.python-version`; uv puede instalarla automáticamente.
+Requisito: [uv](https://docs.astral.sh/uv/getting-started/installation/). La versión de Python está declarada en `.python-version`.
 
 ```bash
 uv sync --frozen
 uv run streamlit run app.py
 ```
 
-Abrir <http://localhost:8501>. El catálogo incluido contiene 1.050 eventos y se carga sin depender de Colab ni de descargas externas. Las dependencias exactas están en `uv.lock`; no es necesario activar manualmente `.venv`.
+Abrir <http://localhost:8501>. La app lee el corpus local; no depende de Google Colab ni de rutas absolutas. Las dependencias exactas están en `uv.lock`.
 
 Para las verificaciones:
 
 ```bash
 uv sync --frozen --group dev
 uv run pytest -q
+uv run ruff check .
 ```
 
 ## Recorrido para presentar el proyecto
 
-1. **Resumen:** pregunta de negocio, cobertura del catálogo, positivos elegibles y eventos pendientes.
-2. **Preprocesamiento:** filtrar la exploración por fechas/país, examinar magnitudes, profundidad, epicentros, correlaciones y Gutenberg–Richter. Revisar conversiones, nulos, reglas físicas y rechazos. Exportar catálogo limpio y auditoría.
-3. **Modelo:** observar las fechas de entrenamiento/validación/prueba y sus embargos; comparar F19/F25 y familias. Ejecutar entrenamiento y revisar cada fold, configuración y candidato no seleccionable.
-4. **Evaluación:** comparar con referencias constante y de actividad reciente, inspeccionar curvas PR/ROC, matriz de confusión, calibración y scores temporales. Simular umbrales; exportar métricas y predicciones.
-5. **Nuevos datos:** cargar un CSV o registrar un evento, generar scores con un modelo congelado y evaluar únicamente horizontes completamente observados. Incorporar los eventos al catálogo si corresponde y entrenar después otra versión.
-6. **Registro:** recuperar experimentos y validaciones, consultar procedencia y versiones, y descargar evidencia del experimento en ZIP.
+1. **Resumen:** tamaño del corpus, mediana del índice de rigor, citas, anomalías y estado de los artefactos. Incluye el contraste exploratorio con las notas reales del tribunal.
+2. **Exploración:** filtros por año, modalidad y clúster temático; distribuciones, correlaciones, tutores con más tesis, términos dominantes y cumplimiento de las ocho secciones reglamentarias.
+3. **Corpus:** búsqueda por título, autor o tutor; ficha de cada tesis con secciones presentes, perfil radial, conclusiones extraídas y tesis similares.
+4. **Auditoría PDF:** subir un PDF nuevo o elegir uno de `dataset/PDFs/`. Genera puntaje 0–100, veredicto, diagnóstico explicable, cobertura de secciones, citas APA/IEEE, coherencia, estilometría, tesis similares y contraste opcional con OpenAlex. Cada informe queda en el registro local.
+5. **Modelos:** benchmark ML vs. Deep Learning del cuaderno, modelo sustituto interpretable del índice, validación contra notas reales, correlaciones y anomalías detectadas por Isolation Forest.
+6. **Registro:** auditorías persistidas en SQLite, descarga en JSON y eliminación controlada.
+7. **Experimento:** ocho etapas visuales con pregunta, explicación del código, interpretación, celda original y datos descargables: preparación, tutores/metadatos, TF-IDF, coherencia/citas, clústeres, rigor/estilometría, modelos/validación y cobertura del cuaderno.
+8. **Chat RAG y datos:** preguntas sobre docentes, rankings, años, estadísticas, cuaderno, benchmark o una tesis específica, con consultas calculadas, conversación, fuentes consultables y exportación JSON.
 
-## Qué estima y qué no demuestra
+## Gráficos para explicar el experimento
 
-Por cada evento en `t`, la etiqueta vale 1 si existe **otro evento** con magnitud ≥ 5 dentro de su misma celda de 0,5° × 0,5°, en `(t, t + 7 días]`. Horizonte, magnitud y celda se pueden modificar en la barra lateral.
+En **Experimento**, selecciona la etapa que quieres presentar. Cada bloque conecta la operación del código con el resultado, incluye las celdas originales de referencia y permite consultar una tabla o descargar los datos del gráfico. Se distingue la figura original de su reconstrucción y de las visualizaciones adicionales de la app.
 
-Esto es un estudio estadístico condicionado a eventos presentes en un catálogo. No es una estimación diaria para cualquier punto del mapa, ni una predicción sísmica científicamente validada. Las salidas se presentan como **scores**; el balanceo de clases puede afectar su calibración. No utilizar para decisiones de emergencia.
+- **Datos y depuración:** contraste de la extracción inicial y v3, recorrido 79→73→71→70, cobertura de ocho secciones, ausencias por documento y distribuciones de modalidad/mención. El paso de 71 documentos corresponde a la salida histórica: el CSV final conservado ya tiene 70.
+- **Tutores y metadatos:** reproduce las figuras de las celdas 23–25 y 28. El ranking permite alternar entre celdas sin limpiar, limpieza exacta de sufijos del cuaderno y conteo por persona de la app. Se explica por qué esos criterios producen cifras distintas. Los resúmenes ausentes se identifican y no se tratan como textos de longitud cero en el boxplot.
+- **TF-IDF y similitud:** usa `min_df=2` y máximo 1.500 términos como el cuaderno, con escenarios alternativos identificados. La etapa inicial reproduce 73×1.500; el vocabulario efectivo de la etapa final puede ser menor que el límite. El mapa muestra 20 documentos inicialmente y permite seleccionar hasta 30. La distribución usa todos los pares distintos, excluyendo la diagonal. La comparación de dos tesis muestra los productos de pesos que suman el coseno y los textos para contrastarlos.
+- **Coherencia y citación:** enfrenta las métricas iniciales con la estrategia por párrafos, dibuja la diagonal de igualdad y comunica cuántos pares válidos existen. También muestra patrones APA/IEEE y la distribución de coincidencias por tesis.
+- **Clústeres:** curva histórica de silhouette para K=3…7, tamaño de grupos, términos originales y sus miembros. No se reentrena K-Means ni se atribuye significado ordinal a sus etiquetas.
+- **Rigor y estilometría:** un gráfico de cascada descompone cada puntaje en sus cinco aportes con el p95 del corpus completo. Un escenario de citas permite ver el efecto del recorte sin modificar los datos. Se muestran longitudes de oraciones, ventanas MATTR y la frontera cero de Isolation Forest, explicando `contamination=0.10`.
+- **Modelos y validación:** las cinco métricas del benchmark tienen escala 0–1; ROC-AUC y Accuracy incorporan la referencia 0,5. Sólo Accuracy conserva desviación entre folds y la muestra como barras de error. La relación con las diez notas reales se interpreta por separado. No se fabrican curvas ROC, pérdidas ni matrices de confusión históricas sin predicciones o historiales conservados.
+- **Cuaderno y cobertura:** inventario de las cinco figuras originales (celdas 23, 24, 25, 28 y 33) y de los resultados originalmente tabulares/textuales que ahora tienen una representación visual. Conserva las imágenes, el código y las salidas originales.
 
-El CSV tiene 54 eventos M ≥ 5, pero eso **no significa 54 etiquetas positivas**: la etiqueta se refiere a un evento fuerte posterior en la misma celda. Con los parámetros originales hay 21 positivos observables; las exclusiones de historia y los embargos reducen los usados al entrenar.
+## Chat con OpenRouter
 
-En la separación predeterminada del catálogo original quedan 607 eventos/4 positivos en entrenamiento, 196/4 en validación y 206/12 en prueba; 19 eventos quedan en embargo. Con 3 folds sólo uno permite medir AP después de exigir ambas clases en entrenamiento y positivos en validación. Es una limitación real que la interfaz expone, no una certificación del modelo. Los resultados nuevos no deben compararse directamente con las cifras guardadas del cuaderno, porque cambió el protocolo.
+La app lee `.env` desde la raíz sin mostrar sus valores. Las variables del entorno tienen prioridad. Para una instalación nueva, copia `.env.example` a `.env` y configura:
 
-## Protocolo de modelado
+```dotenv
+OPENROUTER_API_KEY=tu_clave_para_chat
+OPENROUTER_API_KEY_EMBEDDINGS=tu_clave_para_embeddings
+OPENROUTER_MODEL=openai/gpt-4o-mini
+OPENROUTER_EMBEDDING_MODEL=openai/text-embedding-3-small
+```
 
-- Ventanas históricas `[t−ventana, t)` sin eventos simultáneos; etiqueta futura `(t, t+h]`. Las variables predictoras nunca incluyen `future_max`, `target`, fecha de actualización ni datos del futuro.
-- El 60% de las fechas elegibles define entrenamiento, el siguiente 20% validación y el último 20% prueba. Las proporciones finales cambian al aplicar un embargo estricto de `h` días en **ambas** fronteras. Eventos simultáneos permanecen juntos.
-- Primeros 30 días fuera del modelado por historia incompleta. Últimos `h` días sin etiquetas; permanecen disponibles para scoring.
-- Dentro del entrenamiento: CV de origen expansivo con embargo por **días**, no por número de filas. Imputación mediana, indicadores de ausencia, escalado y one-hot se ajustan dentro de cada fold. Las categorías desconocidas se admiten.
-- Candidatos: logística balanceada, SVM RBF, Random Forest, bagging de árboles y boosting `HistGradientBoostingClassifier`. Se usa el boosting de scikit-learn en lugar de hacer una instalación dinámica de XGBoost. La opción de búsqueda compara dos configuraciones predeterminadas por familia; no es una búsqueda exhaustiva.
-- Stacking combina logística y Random Forest; su metamodelo aprende sólo de predicciones temporales fuera de muestra con embargo. Con este catálogo se puede ajustar al bloque completo, pero su CV interna es insuficiente: aparece como no seleccionable y se explica el motivo.
-- Dos referencias siempre presentes: prevalencia constante de entrenamiento y actividad en celda a 30 días, transformada monótonamente con escala calculada en entrenamiento.
-- Se elige por AP media de CV, incluyendo las referencias. Un candidato con CV incompleta no participa en la selección. El umbral se ajusta con F2 **sólo en validación**. No se reajusta el modelo con validación/prueba antes de mostrar las métricas.
-- AP corresponde a `average_precision_score`, no a una integración trapezoidal de PR. Se reportan ROC AUC, recall, precisión, F2, MCC, balanced accuracy, Brier cuando corresponde, lift y tasa de señales. Las métricas indefinidas quedan vacías; no se inventan ceros.
-- SVM utiliza `decision_function` transformada con sigmoid exclusivamente como score, evitando la calibración interna aleatoria de `SVC(probability=True)`. No se calcula Brier para SVM ni para la referencia de actividad.
-- IC exploratorios por bootstrap de bloques de duración `max(7, horizonte)` días; no reemplazan una validación prospectiva. Importancia por permutación en validación, nunca usada para volver a elegir variables mirando prueba.
+El asistente de GPT-4o mini puede combinar estas herramientas en un mismo turno:
 
-Los folds sin positivos en validación no tienen AP definida. Los folds cuyo entrenamiento tiene una sola clase se omiten y se documentan. Si ningún fold permite evaluar AP, el entrenamiento se detiene con una explicación. Cambiar parámetros buscando mejorar repetidamente la prueba consume su independencia; hace falta un catálogo externo para confirmar.
+- **consultar_datasets:** SQL de sólo lectura sobre todos los CSV/Parquet: conteos, rankings, medias, medianas (`median`), desviación muestral (`stddev`), filtros y cruces entre etapas.
+- **buscar_proyectos:** búsqueda por título, tema, materias, resumen, autor, docente y año; incluye paginación, identificadores y enlaces al repositorio. La búsqueda es léxica y no sustituye un censo temático.
+- **consultar_proyecto:** ficha unificada de cualquiera de los 79 registros, con docentes/roles, resumen, materias, conclusiones y métricas disponibles. Los campos ausentes permanecen `null`.
+- **buscar_documentos:** fragmentos del cuaderno, documentación y tesis; puede limitarse a hasta tres PDFs identificados para evitar mezclar proyectos.
+- **leer_pdf:** busca objetivos, metodología, tecnologías, pruebas o conclusiones dentro del PDF seleccionado y cita páginas físicas reales. Penaliza los índices y prioriza encabezados de sección. Los textos de hasta ocho PDFs se mantienen en caché; no hace OCR.
+- **leer_pagina_pdf:** lectura de una página física concreta, numerada desde 1.
+- **leer_cuaderno:** código y salidas de una celda original, con continuación mediante `offset` para celdas extensas.
+- **consultar_documentacion:** instrucciones actuales de ejecución/configuración de la app desde README, separadas del contenido de las tesis.
 
-## Contrato de datos nuevos
+Una búsqueda textual vacía no impide consultar tablas o fichas. Las fuentes muestran SQL y resultados, metadatos de proyectos, fragmentos o páginas PDF con identificadores `[F1]`, `[F2]`, etc. El chat conserva referencias ordenadas a proyectos/docentes de las respuestas anteriores para resolver seguimientos como «el segundo» o «compáralos»; vuelve a consultar las fuentes para responder. Un turno admite hasta siete rondas de herramientas y una respuesta final.
 
-CSV UTF-8/Latin-1, separado por coma o punto y coma. Columnas mínimas:
+El catálogo distingue los 79 registros originales (`metadatos`) de las 70 tesis únicas (`corpus`). Las vistas `docentes_original` y `docentes_final` separan personas por punto y coma y distinguen tutores de asesores. Normalizan acentos, roles y variantes de nombres que son prefijos sin ambigüedad; conservan `nombre_original` para revisión. Por defecto, el ranking cuenta PDFs distintos por tutor o docente sin rol explícito en los 79 registros originales. Los asesores se incluyen cuando se solicita participación o asesoría. No se fusionan nombres ambiguos. El gráfico de tutores de Exploración usa el mismo criterio sobre el corpus filtrado.
 
-- `time`: fecha y hora ISO 8601. Si no tiene zona se interpreta como UTC.
-- `latitude`, `longitude`: grados decimales.
-- `depth`: kilómetros.
-- `mag`: magnitud numérica.
+La tabla **proyectos** une los 79 metadatos con las métricas finales sin descartar los nueve registros excluidos del modelado; incluye `en_corpus_final` y `pdf_disponible`. **materias** separa las etiquetas originales por proyecto. El selector «Una tesis» cubre los 79 registros. Si falta un PDF, se conservan su ficha y los datos extraídos disponibles; el asistente debe indicarlo sin inventar páginas ni métricas.
 
-Columnas recomendadas: `id`, `place`, `magType`, `magSource`, `nst`, `gap`, `dmin`, `rms`, `horizontalError`, `depthError`, `magError`, `magNst`, `updated`. Si falta ID se genera uno estable a partir de los campos mínimos. Los decimales usan punto.
+`motivo_exclusion` conserva el retiro explícito registrado en el cuaderno y marca como no documentados los motivos individuales que no constan. La exclusión del corpus no se presenta como un juicio de calidad de la tesis. Las consultas de documentación también reciben los identificadores de los modelos activos, sin sus claves, para distinguir el chat de los modelos del experimento.
 
-Fechas imposibles, coordenadas fuera de rango, magnitud fuera de [−2, 10] o profundidad fuera de [−10, 800] se rechazan con motivo. Los nulos de columnas opcionales se imputan durante el modelado. Los indicadores de calidad negativos se convierten a nulos. Los valores extremos físicamente válidos se conservan. Las columnas constantes se auditan y se mantienen en el contrato para aceptar posteriores datos con variación.
+La consulta SQL se ejecuta en SQLite en memoria: no puede modificar los datasets, adjuntar bases, cargar extensiones ni acceder al sistema. Tiene un límite de ejecución y devuelve hasta 100 filas. El ámbito «Una tesis» filtra las tablas antes de consultar. Los textos extensos se limitan en los resultados tabulares; para contenido se usa la recuperación documental.
 
-Máximo 20 MB por archivo y 50.000 filas por catálogo combinado. La app no acepta artefactos pickle/joblib subidos por usuarios.
+El índice documental TF-IDF comprende el texto completo y las conclusiones de las 70 tesis, sus fichas, el benchmark y el código/resultados textuales del cuaderno. Se fragmenta con 1.800 caracteres y 250 de solapamiento. Recupera hasta 24 candidatos; los embeddings opcionales reordenan estos candidatos. Se envían hasta seis fragmentos por búsqueda, junto con los últimos ocho turnos. Los localizadores indican archivo, sección/celda y desplazamiento de caracteres, no páginas PDF. El índice documental se construye sólo cuando se necesita.
 
-**Validar no equivale a reentrenar:**
+La generación usa la [API de chat y herramientas de OpenRouter](https://openrouter.ai/docs/guides/features/tool-calling) y el reordenamiento usa su [API de embeddings](https://openrouter.ai/docs/api/api-reference/embeddings/create-embeddings). Las consultas consumen el saldo de esas claves. No se hacen solicitudes al abrir el panel; sólo al enviar una pregunta. El modo **Sólo buscar evidencia** es un buscador documental sin generación; para que sea totalmente local desactiva también **Reordenar con embeddings**. Si embeddings falla, se conserva la recuperación léxica. El chat normal calcula datos con las herramientas y puede corregir consultas dentro del mismo turno antes de responder.
 
-1. Entrenar o recuperar un experimento en Registro.
-2. Cargar un lote de eventos **posteriores al último evento del catálogo de ese experimento**, sin IDs repetidos del histórico.
-3. Pulsar «Evaluar con modelo congelado». El histórico se usa para calcular ventanas pasadas. La etiqueta se calcula sólo cuando el lote cubre hasta `t+h`. El último tramo queda pendiente y no entra en métricas.
-4. Para resolver pendientes, cargar un lote acumulado completo desde el final del catálogo congelado, incluyendo los eventos anteriores y los posteriores que completan el horizonte. Cada validación queda asociada al experimento y a la huella del lote; el mismo lote no duplica registros.
-5. «Incorporar al catálogo y guardar» conserva IDs existentes y agrega eventos nuevos. No altera el experimento congelado. Después crear otro entrenamiento para obtener una nueva versión.
+Las claves permanecen en el servidor y `.env` se excluye de Git y Docker. Compose inyecta sus variables mediante `env_file` opcional. El historial pertenece a la sesión de Streamlit y puede descargarse o reiniciarse. El chat informa al usuario que las preguntas y fragmentos seleccionados se envían a OpenRouter.
 
-El catálogo debe mantener región, cobertura y criterio de selección. No basta con cargar sólo sismos fuertes o eventos aislados para construir etiquetas negativas fiables. La cobertura se **supone continua hasta el último evento cargado**; una pausa de captura no puede inferirse como ausencia real de sismos. La app muestra rangos, faltantes y separación respecto al histórico, pero no certifica completitud ni comparabilidad de escalas de magnitud.
+## Qué mide el índice de rigor
 
-El CSV histórico contiene mediciones revisadas. Aunque se excluye `updated` como predictor, no hay versiones de las mediciones tal como estaban disponibles en cada instante: el embargo no resuelve ese sesgo de revisión. Para una evaluación prospectiva hacen falta snapshots de adquisición y predicciones registradas antes de conocer el futuro.
+El índice reproduce la fórmula del cuaderno:
 
-## Persistencia y operación
+| Componente | Peso |
+|---|---:|
+| Estructura reglamentaria (8 secciones) | 25% |
+| Coherencia objetivos ↔ marco aplicativo | 25% |
+| Coherencia objetivos ↔ conclusiones | 15% |
+| Citas detectadas (APA + IEEE) | 20% |
+| Extensión en páginas | 15% |
 
-`runtime/sismolab.sqlite3` guarda el catálogo activo, metadatos de experimentos y reportes externos. `runtime/models/` contiene los pipelines y snapshots congelados. Cada experimento incluye UUID, SHA-256 del catálogo, parámetros, semilla, versiones de Python/scikit-learn, límites temporales y resultados. El checksum detecta corrupción accidental del artefacto antes de cargarlo; no es una firma de confianza contra un atacante con acceso al servidor.
+Umbrales del veredicto: **≥ 72** sólido, **≥ 60** aceptable con observaciones, por debajo **deficiente**.
 
-`SISMO_DATA_DIR` cambia la ubicación persistente. El catálogo cargado en la barra lateral se utiliza en sesión hasta pulsar «Guardar catálogo local»; el catálogo incluido también puede restaurarse en sesión sin borrar el guardado. Los experimentos se guardan automáticamente al entrenar. Las incorporaciones desde Nuevos datos se guardan de inmediato. `runtime/` se excluye de Git y de la imagen.
+La coherencia se aproxima con TF-IDF y similitud de coseno para evitar dependencias pesadas de `torch`/`sentence-transformers`. El cuaderno original usa embeddings; los valores no son idénticos, pero la app documenta la diferencia y mantiene el mismo protocolo de comparación contra percentiles del corpus.
 
-Esta entrega funciona como una instancia interna con un catálogo compartido. Para operación empresarial multiusuario faltan autenticación/roles, aislamiento por organización, historial y aprobación de revisiones de catálogo, coordinación de escrituras entre sesiones, backups y monitoreo de deriva con etiquetas reales. SQLite y los artefactos requieren un volumen persistente; respaldar el directorio completo con la aplicación detenida o con un procedimiento consistente de backup.
+## Archivos de datos utilizados
+
+| Archivo | Uso |
+|---|---|
+| `dataset/df_maestro_final_modelos_70.parquet` | Corpus de 70 tesis con texto, métricas, clúster y anomalías. |
+| `dataset/resultados_modelos_umsa_70.csv` | Respaldo ligero del corpus si falta el Parquet. |
+| `dataset/auditor_umsa_produccion.joblib` | Percentiles, metadatos y embeddings de referencia. |
+| `dataset/benchmark_ml_vs_dl_umsa.csv` | Resultados comparativos del cuaderno. |
+| `dataset/metadatos_informatica.csv` | Metadatos originales del repositorio. |
+| `dataset/PDFs/` | Documentos para auditoría y comparación interna. |
+
+## Límites y advertencias
+
+- El índice es una **señal de apoyo**, no una calificación oficial ni una decisión automática de aprobación.
+- La validación con notas reales usa una muestra pequeña (10 actas). En esta muestra la correlación de Spearman es negativa y no significativa; la app la muestra sin ocultarla.
+- El modelo logístico de la pestaña Modelos es un **sustituto** del índice: comparte sus variables, por lo que su AUC alto es esperado y no demuestra validez predictiva.
+- La coherencia TF-IDF mide solapamiento léxico, no comprensión semántica profunda.
+- Isolation Forest marca perfiles atípicos; una anomalía no implica fraude ni mala calidad.
+- OpenAlex requiere internet y sólo aporta contexto externo; no modifica el puntaje.
+
+## Estructura
+
+```
+app.py                 Interfaz Streamlit
+umsa/data.py           Carga del corpus, secciones, citas, estilometría y similitud
+umsa/audit.py          Extracción de PDF y auditoría explicable
+umsa/modeling.py       Modelo sustituto, correlaciones y validación con notas
+umsa/storage.py        Registro SQLite de auditorías
+umsa/notebook.py       Celdas, figuras originales y fragmentación
+umsa/rag.py            Recuperación y cliente OpenRouter
+umsa/analytics.py      Catálogo, normalización de docentes y consultas de sólo lectura
+umsa/research.py       Búsqueda/fichas de proyectos, lectura PDF por página y documentación
+umsa/presentation.py   Laboratorio interactivo y chat con fuentes
+umsa/figures.py        Cálculos y figuras reproducibles del cuaderno
+umsa/lessons.py        Recorrido visual por etapas con código y datos
+tests/                 Pruebas del pipeline y de la interfaz
+dataset/               Corpus, artefactos y PDFs
+repositorioUMSA.ipynb  Cuaderno original de referencia
+```
 
 ## Docker
 
 ```bash
-docker compose up --build -d
-docker compose logs -f
+docker compose up --build
 ```
 
-Abrir <http://localhost:8501>. El contenedor corre como usuario sin privilegios, expone la comprobación de salud `/_stcore/health` y guarda datos en el volumen `sismolab_data`. Para detenerlo sin perder los datos: `docker compose down`.
-
-Para un servidor remoto: ejecutar detrás de HTTPS y autenticación. No publicar un catálogo compartido de escritura anónima. El despliegue público no está realizado por esta entrega; requiere elegir servidor/cuenta.
-
-También se incluye `requirements.txt` exportado desde `uv.lock` para plataformas basadas en pip como Streamlit Community Cloud. Seleccionar Python 3.12 y `app.py`; esas plataformas pueden tener almacenamiento efímero, por lo que no sustituyen el volumen de la instalación Docker.
-
-## Estructura
-
-- `app.py`: interfaz, navegación, formularios y visualizaciones.
-- `sismo/data.py`: contrato CSV, limpieza, auditoría, huellas y exportación.
-- `sismo/features.py`: ingeniería causal, etiqueta, particiones y folds.
-- `sismo/modeling.py`: candidatos, stacking temporal, selección, métricas, incertidumbre e inferencia externa.
-- `sismo/storage.py`: SQLite, artefactos locales y registro de validaciones.
-- `tests/`: fronteras temporales, censura, separación, ausencia de fuga, persistencia e interacción con el runtime de Streamlit sobre el catálogo real.
-
-Referencias de implementación: [TimeSeriesSplit y su `gap` expresado en muestras](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html), [AppTest de Streamlit](https://docs.streamlit.io/develop/api-reference/app-testing/st.testing.v1.apptest). Aquí las particiones se implementan por fecha para aplicar el embargo a eventos irregularmente espaciados.
+La app escucha en `127.0.0.1:8501` y persiste el registro en el volumen `umsa_data`. El directorio de datos se puede cambiar con `UMSA_DATA_DIR`.
